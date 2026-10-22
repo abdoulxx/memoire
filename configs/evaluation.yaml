@@ -1,0 +1,28 @@
+# Definitions des metriques d'evaluation (memoire, §7).
+# Ces conventions sont fixees ici une fois pour toutes : elles valent pour
+# toutes les strategies, les deux sources de donnees et les deux modes.
+
+event:
+  # Tolerance, en nombre de points, apres la fin d'un evenement : une alerte
+  # emise dans [debut, fin + tolerance] est attribuee a cet evenement.
+  # `null` = window_size - 1, ce qui rend la zone d'attribution identique a
+  # l'ensemble des fenetres etiquetees positives a cause de cet evenement.
+  tolerance_points: null
+
+false_alerts:
+  # Une fausse alerte est une alerte emise sur une fenetre etiquetee negative.
+  # Cette definition est volontairement identique aux faux positifs de la
+  # matrice de confusion par fenetre : le memoire ne contient ainsi qu'une
+  # seule verite terrain, et les deux familles de metriques sont coherentes.
+  definition: negative_windows
+
+zero_division:
+  # Valeur retenue quand un denominateur est nul (aucune alerte, ou aucune
+  # fenetre positive). Convention de scikit-learn, pour rester comparable.
+  value: 0.0
+
+recovery:
+  # Temps de recuperation : retour du F1 glissant a ce niveau relatif
+  # d'avant-derive. Utilise a partir de M2.
+  f1_ratio: 0.90
+  rolling_windows: 500

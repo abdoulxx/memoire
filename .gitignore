@@ -1,0 +1,25 @@
+# Donnees brutes et sessions : jamais dans le depot (voir CLAUDE.md 4.3)
+data/raw/
+data/labels/
+data/sessions/
+
+# Resultats volumineux : seul summary.csv est suivi
+results/runs/
+
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# MLflow (local)
+mlruns/
+mlartifacts/
+
+# Notebooks
+.ipynb_checkpoints/

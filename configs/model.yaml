@@ -1,0 +1,16 @@
+# Modele de detection et regle de seuil.
+# La meme regle de seuil s'applique a toutes les strategies (B0, B1, P) :
+# c'est une condition de validite de la comparaison.
+
+model: isolation_forest
+
+isolation_forest:
+  n_estimators: 100
+  max_samples: 256      # valeur de reference de Liu et al. (2008)
+  contamination: auto   # non utilise : le seuil est fixe par percentile (voir ci-dessous)
+  n_jobs: -1
+  # random_state n'est pas fixe ici : il vient de la seed de l'execution.
+
+threshold:
+  method: train_percentile
+  percentile: 99.0      # une alerte attendue pour 100 fenetres d'entrainement

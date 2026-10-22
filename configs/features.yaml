@@ -1,0 +1,29 @@
+# Construction des fenetres et des features. Aucune de ces valeurs n'est en dur
+# dans le code : elles sont recopiees a cote des resultats de chaque execution.
+
+# Taille de la fenetre, en nombre de points.
+# SMD : 1 point = 1 minute, donc w = 10 points = 10 minutes.
+window_size: 10
+
+# Pas entre deux fenetres consecutives, en nombre de points.
+# 1 = fenetres glissantes, une nouvelle fenetre a chaque point : identique a la
+# boucle en ligne qui interrogera Prometheus chaque minute.
+stride: 1
+
+# Agregats calcules sur la fenetre, pour chaque metrique.
+# `last` est la valeur a l'instant t (fin de la fenetre).
+aggregates:
+  - last
+  - mean
+  - std
+  - max
+
+# Standardisation des features : ajustee sur les fenetres d'entrainement
+# uniquement, puis sauvegardee avec le modele.
+scaling:
+  method: standard   # standard | none
+
+# Une fenetre est positive si elle contient au moins `min_anomalous_points`
+# point(s) etiquete(s) anormal(aux).
+labeling:
+  min_anomalous_points: 1

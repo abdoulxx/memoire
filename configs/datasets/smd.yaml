@@ -1,0 +1,37 @@
+# Server Machine Dataset (SMD) — source principale des resultats (memoire, chapitre 6).
+# Su et al. (2019), KDD. Depot NetManAIOps/OmniAnomaly, licence MIT.
+name: smd
+
+source:
+  repo: NetManAIOps/OmniAnomaly
+  ref: master
+  path: ServerMachineDataset
+  base_url: https://raw.githubusercontent.com/NetManAIOps/OmniAnomaly/master/ServerMachineDataset
+  license: MIT
+  citation: "Su, Y., Zhao, Y., Niu, C., Liu, R., Sun, W., & Pei, D. (2019). Robust Anomaly Detection for Multivariate Time Series through Stochastic Recurrent Neural Network. KDD '19."
+
+# Trois machines, une par groupe : perimetre de M0 a M2.
+# Extension aux 28 machines a M3 si le temps le permet.
+machines:
+  - machine-1-1
+  - machine-2-1
+  - machine-3-1
+
+# Sous-dossiers du dataset. `train` est sans etiquettes (suppose majoritairement normal),
+# `test` est etiquete point par point par `test_label`.
+parts:
+  train: train
+  test: test
+  test_label: test_label
+  interpretation_label: interpretation_label
+
+# Repertoire local (ignore par git, voir .gitignore)
+raw_dir: data/raw/smd
+
+# Caracteristiques attendues, verifiees au chargement
+expected_n_features: 38
+
+# Intervalle d'echantillonnage, en secondes.
+# [A VERIFIER] non documente dans le README du depot : valeur confirmee
+# empiriquement (nombre de points vs duree annoncee) et sourcee dans docs/decisions.md.
+sampling_interval_seconds: 60
