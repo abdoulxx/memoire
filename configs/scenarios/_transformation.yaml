@@ -1,0 +1,71 @@
+# Transformation de derive, PARTAGEE par les quatre scenarios S1 a S4.
+#
+# Pourquoi un seul fichier : les quatre scenarios doivent differer par leur
+# *profil temporel* et par rien d'autre. Si chacun portait sa propre amplitude,
+# un ecart de performance entre S1 et S2 ne serait plus attribuable au type de
+# derive. Les fichiers s1 a s4 ne contiennent donc que le profil, et designent
+# ce fichier par la cle `transformation`.
+#
+# Forme appliquee a chaque metrique touchee, au point t :
+#   x'(t) = clip( x(t) + a(t) * k * sigma_train
+#                      + a(t) * (echelle - 1) * (x(t) - mu_train) , bas, haut )
+# ou a(t) dans [0, 1] est le profil temporel du scenario.
+# mu_train et sigma_train sont calcules sur la moitie `train`, metrique par
+# metrique : c'est le comportement normal que le modele a appris.
+
+# Decalage de niveau, en multiples de l'ecart-type d'entrainement.
+# CALIBRE (D22) sur les 16 machines de mise au point, grille 0,5 a 8, trois
+# graines, scenario S1 : `mdrift calibration-k` -> results/calibration_k_dev.csv.
+# Jamais regle sur une machine d'evaluation (D17).
+# A k = 2 : le taux d'alertes de B0 passe de 4,9 % a 28,6 % en mediane
+# (facteur median par machine 7,0), 13 machines sur 16 sont perturbees d'un
+# facteur 3 au moins,
+# 5 saturent (plus de 50 % de fenetres en alerte) et une seule depasse la cible
+# d'ecretage de 15 %. k = 3 ne gagne qu'une machine perturbee au prix de deux
+# machines saturees et de deux depassements d'ecretage de plus ; k = 1 laisse
+# le F1 quasi inchange (rapport median 0,92 contre 0,69).
+level_shift_k: 2.0
+
+# Changement d'echelle : facteur applique a l'ecart a la moyenne d'entrainement.
+# > 1 elargit la dispersion. Un decalage de niveau seul serait une derive trop
+# facile, detectable par une simple moyenne glissante ; une derive reelle de
+# deploiement change le niveau ET la variabilite.
+scale_factor: 1.5
+
+metriques:
+  # Part des metriques injectables qui sont touchees, tirage fixe par la seed.
+  # 1,0 (tout toucher) serait irrealiste : un deploiement n'affecte pas les 38
+  # metriques. Une part trop faible serait invisible dans une agregation sur
+  # 152 features.
+  fraction: 0.30
+
+  # Les metriques constantes sur `train` (sigma_train = 0) sont exclues du
+  # tirage : un decalage de k * 0 ne ferait rien. D15 en releve 5 a 8 selon la
+  # machine, soit 30 a 33 metriques injectables sur 38.
+  exclure_constantes: true
+
+ecretage:
+  # Les valeurs transformees sont ramenees dans [0, 1] (D15). Le SMD est deja
+  # normalise dans cet intervalle a la source (OBS01) : une valeur > 1 serait
+  # hors domaine et un detecteur trivial atteindrait un rappel parfait sans rien
+  # apprendre. C'est aussi physiquement juste, les metriques reelles saturent.
+  bas: 0.0
+  haut: 1.0
+
+  # Garde-fou de calibrage : au-dela de cette part de valeurs ecretees parmi les
+  # cellules touchees, la derive est consideree trop grossiere (elle sature la
+  # metrique et devient triviale a detecter). L'injection refuse de produire un
+  # flux au-dela, ce qui borne par le haut le k retenu a l'etape 5.
+  part_max_toleree: 0.35
+
+onset:
+  # Instant de derive t_d, tire uniformement dans cette plage de la longueur du
+  # flux de test (D15). [40 %, 60 %] laisse au moins 9 474 fenetres (158 h) de
+  # chaque cote, de quoi calculer F1 avant/apres sur des echantillons
+  # comparables et mesurer le temps de recuperation sur 500 fenetres.
+  position_min: 0.40
+  position_max: 0.60
+
+# Les etiquettes d'anomalie ne sont JAMAIS modifiees par l'injection, ni avant
+# ni apres t_d (cadrage, §5). La derive change le comportement normal, pas la
+# verite terrain des anomalies.

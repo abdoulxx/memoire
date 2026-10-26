@@ -328,6 +328,164 @@ def baseline(
     typer.echo("\nResultats dans results/summary.csv et results/runs/.")
 
 
+@app.command("inject")
+def inject_command(
+    dataset_config: str = typer.Option(
+        "datasets/smd_dev.yaml", help="Configuration du dataset (mise au point par defaut)."
+    ),
+    features_config: str = typer.Option("features.yaml", help="Configuration des features."),
+    scenario: str = typer.Option("all", help="Nom d'un scenario, ou 'all' pour S1 a S4."),
+    seeds: str = typer.Option("42", help="Seeds separees par des virgules."),
+) -> None:
+    """Decrit la derive injectee sur chaque machine, scenario et graine.
+
+    Ecrit `results/injections.csv` : instant de derive, metriques touchees, duree
+    de transition, part ecretee. C'est la description des donnees derivees
+    demandee au §11 du cadrage, et la verification que l'injection se comporte
+    comme prevu sur les donnees reelles avant toute campagne.
+    """
+    from scenarios.injection import SCENARIOS
+    from src.evaluation.injection import INJECTIONS_PATH, audit
+
+    choisis = list(SCENARIOS) if scenario == "all" else [scenario]
+    graines = [int(s) for s in seeds.split(",") if s.strip()]
+
+    typer.echo(
+        f"{'machine':<14}{'scenario':<18}{'graine':>7}{'t_d (h)':>9}{'position':>10}"
+        f"{'transition (h)':>16}{'metriques':>11}{'ecrete':>9}"
+    )
+
+    def show(row: dict) -> None:
+        typer.echo(
+            f"{row['machine']:<14}{row['scenario']:<18}{row['seed']:>7}"
+            f"{row['drift_heures']:>9.1f}{row['drift_position']:>10.3f}"
+            f"{row['duree_transition_heures']:>16.1f}{row['n_metriques_touchees']:>11}"
+            f"{row['part_ecretee'] * 100:>8.2f}%"
+            f"{'  !' if row['ecretage_au_dela_tolerance'] else ''}"
+        )
+
+    table = audit(
+        dataset_config=dataset_config,
+        features_config=features_config,
+        scenarios=choisis,
+        seeds=graines,
+        on_row=show,
+    )
+    typer.echo(
+        f"\n{len(table)} injections sur {table['machine'].nunique()} machines, "
+        f"{table['scenario'].nunique()} scenarios, {table['seed'].nunique()} graines."
+    )
+    typer.echo(
+        f"Part ecretee : mediane {table['part_ecretee'].median() * 100:.2f} %, "
+        f"max {table['part_ecretee'].max() * 100:.2f} %."
+    )
+    au_dela = int(table["ecretage_au_dela_tolerance"].sum())
+    if au_dela:
+        typer.echo(
+            f"{au_dela} injections sur {len(table)} depassent la tolerance d'ecretage "
+            "(marquees !) : le garde-fou les refuserait en campagne. "
+            "C'est ce que le calibrage de k doit corriger."
+        )
+    typer.echo(f"-> {INJECTIONS_PATH.relative_to(PROJECT_ROOT_DISPLAY)}")
+
+
+@app.command("calibration-k")
+def calibration_k(
+    dataset_config: str = typer.Option(
+        "datasets/smd_dev.yaml", help="Perimetre de mise au point. NE PAS pointer smd_eval.yaml."
+    ),
+    features_config: str = typer.Option("features.yaml", help="Configuration des features."),
+    model_config: str = typer.Option("model.yaml", help="Configuration du modele."),
+    evaluation_config: str = typer.Option("evaluation.yaml", help="Configuration des metriques."),
+    calibration_config: str = typer.Option(
+        "calibration_k.yaml", help="Grille de k et criteres de lecture."
+    ),
+) -> None:
+    """Calibre l'amplitude k de la derive injectee (etape 5 de M1, decision D22).
+
+    Mesure la degradation du F1 de B0 de part et d'autre de t_d pour chaque k de
+    la grille, sur les machines de mise au point uniquement (D17). Ecrit
+    `results/calibration_k_dev.csv` et affiche le tableau de lecture.
+    """
+    from src.config import load_config
+    from src.evaluation.injection import K_CALIBRATION_PATH, calibrate_k, k_verdict
+
+    typer.echo(
+        f"{'machine':<14}{'k':>6}{'graine':>8}{'F1 avant':>10}{'F1 apres':>10}"
+        f"{'ratio':>8}{'alertes apres':>15}{'ecrete':>9}"
+    )
+
+    def show(row: dict) -> None:
+        ratio = row["ratio_f1"]
+        typer.echo(
+            f"{row['machine']:<14}{row['k']:>6.1f}{row['seed']:>8}"
+            f"{row['f1_avant'] or 0:>10.3f}{row['f1_apres'] or 0:>10.3f}"
+            f"{'-' if ratio is None else f'{ratio:.2f}':>8}"
+            f"{(row['taux_alertes_apres'] or 0) * 100:>14.1f}%"
+            f"{row['part_ecretee'] * 100:>8.2f}%"
+        )
+
+    table = calibrate_k(
+        dataset_config=dataset_config,
+        features_config=features_config,
+        model_config=model_config,
+        evaluation_config=evaluation_config,
+        calibration_config=calibration_config,
+        on_row=show,
+    )
+    resume = k_verdict(table, load_config(calibration_config))
+
+    typer.echo("\nLecture par k (moyenne par machine d'abord, voir OBS06) :")
+    typer.echo(resume.to_string(index=False))
+    typer.echo(f"\n-> {K_CALIBRATION_PATH.relative_to(PROJECT_ROOT_DISPLAY)}")
+
+
+@app.command("scenario-figures")
+def scenario_figures(
+    machine: str = typer.Option(
+        "machine-1-1", help="Machine de mise au point servant d'illustration."
+    ),
+    dataset_config: str = typer.Option("datasets/smd_dev.yaml", help="Configuration du dataset."),
+    seed: int = typer.Option(42, help="Graine de l'injection illustree."),
+    metric: int | None = typer.Option(
+        None, help="Indice de metrique a tracer ; par defaut la plus visible."
+    ),
+) -> None:
+    """Produit les figures des quatre scenarios de derive (livrable M1).
+
+    Deux PNG dans `docs/figures/` : les profils temporels a(t) seuls, et l'effet
+    de l'injection sur une metrique reelle du SMD.
+    """
+    from datasets.smd.loader import load_machine
+    from scenarios.injection import SCENARIOS
+    from src.evaluation.scenario_figures import (
+        load_scenarios,
+        plot_injection_grid,
+        plot_profiles,
+    )
+
+    scenarios = load_scenarios(list(SCENARIOS))
+
+    profils = plot_profiles(scenarios)
+    typer.echo(f"-> {profils.relative_to(PROJECT_ROOT_DISPLAY)}")
+
+    smd_machine = load_machine(machine, dataset_config)
+    grille, descriptions = plot_injection_grid(
+        machine=smd_machine, scenarios=scenarios, seed=seed, metric=metric
+    )
+    typer.echo(f"-> {grille.relative_to(PROJECT_ROOT_DISPLAY)}")
+
+    typer.echo("")
+    typer.echo(f"{machine}, graine {seed} :")
+    for ligne in descriptions:
+        typer.echo(
+            f"  {ligne['scenario']:<16} metrique {ligne['metrique']:>2}  "
+            f"t_d = {ligne['t_d_heures']:>6.1f} h  "
+            f"{ligne['n_metriques_touchees']} metriques touchees  "
+            f"ecrete {ligne['part_ecretee_percent']:.2f} %"
+        )
+
+
 @app.command("figures")
 def figures(
     machine: str = typer.Option("all", help="Nom d'une machine SMD, ou 'all'."),

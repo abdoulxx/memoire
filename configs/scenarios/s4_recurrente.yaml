@@ -1,0 +1,23 @@
+# S4 — Derive RECURRENTE (Gama et al., 2014).
+# Les deux regimes alternent periodiquement : le regime d'origine revient.
+# C'est le scenario qui distingue une strategie qui s'adapte d'une strategie qui
+# oublie : un modele reentraine sur le nouveau regime se trouve perime des que
+# l'ancien revient.
+# Equivalent sur le serveur personnel : alternance de regimes de charge
+# (jour / nuit simules).
+
+name: s4_recurrente
+transformation: scenarios/_transformation.yaml
+
+profil:
+  # a(t) alterne entre 0 et 1 par creneaux, a partir de t_d.
+  type: recurrent
+
+  # Duree d'un cycle complet, en minutes. Le SMD est echantillonne a la minute
+  # (D06), un cycle de 720 min reproduit donc une alternance jour / nuit sur un
+  # flux de test d'environ 400 heures, soit une quinzaine de cycles : assez pour
+  # que la recurrence soit observable sans etre confondue avec du bruit.
+  periode_minutes: 720
+
+  # Part du cycle passee dans le regime transforme.
+  rapport_cyclique: 0.5

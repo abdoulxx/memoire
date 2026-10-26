@@ -1,0 +1,68 @@
+# Calibrage de l'amplitude de la derive injectee (etape 5 de M1).
+# Produit `results/calibration_k_dev.csv` et fonde la decision D22.
+#
+# Mesure : degradation du F1 de B0 (modele fige) de part et d'autre de t_d, en
+# fonction du decalage k. Faite sur les 16 machines de mise au point
+# (configs/datasets/smd_dev.yaml) et sur elles seules : regler l'amplitude en
+# regardant les etiquettes d'une machine d'evaluation invaliderait le chapitre 6
+# (D17).
+
+# Scenario support du calibrage. S1 (soudaine) parce que c'est le profil ou
+# l'effet de k est le plus lisible : a(t) vaut 1 partout apres t_d, la
+# degradation mesuree n'est pas melangee a une transition en cours.
+# Le k retenu s'applique ensuite aux quatre scenarios, qui partagent la meme
+# transformation par construction.
+scenario: scenarios/s1_soudaine.yaml
+
+# Grille de decalages, en multiples de sigma_train. Elle monte jusqu'a 8 parce
+# que D15 releve que +3 sigma ne vaut que 0,09 a 0,12 sur une echelle [0, 1] :
+# il faut pouvoir constater si k doit depasser 3.
+k_grid: [0.5, 1.0, 2.0, 3.0, 5.0, 8.0]
+
+# Trois graines : t_d et le tirage des metriques touchees changent, la variabilite
+# entre graines est donc mesuree et non supposee.
+seeds: [42, 7, 13]
+
+# Garde-fou d'ecretage DESACTIVE pendant le calibrage (1,0 = aucune limite).
+# C'est voulu : on mesure la part ecretee pour chaque k, c'est precisement la
+# grandeur qui borne le k admissible par le haut. La configuration de production
+# (configs/scenarios/_transformation.yaml) garde sa limite a 0,35.
+part_ecretee_max: 1.0
+
+# Un segment (avant ou apres derive) de moins de ce nombre de fenetres ne permet
+# pas un F1 interpretable : la ligne est alors journalisee sans F1 de segment.
+min_segment_windows: 500
+
+# Criteres de lecture, repris dans D22. Aucun seuil n'est applique
+# automatiquement : la decision est prise en lisant le tableau.
+#
+# Le critere porte sur le TAUX D'ALERTES et non sur le rapport des F1. Mesure a
+# la premiere execution : le rapport F1 apres / F1 avant est inexploitable sur
+# ce perimetre, parce que son denominateur est quasi nul la ou il faudrait
+# qu'il soit informatif. Sur 4 machines de mise au point, B0 obtient F1 = 0
+# avant t_d (rapport indefini) ; sur machine-2-7, F1 avant = 0,0070 donne un
+# rapport median de 63,8, jusqu'a 80,1, qui ne dit rien d'une amelioration
+# reelle de la detection. C'est une consequence
+# directe d'OBS03 : les machines de mise au point sont majoritairement celles
+# ou B0 echoue deja avant toute injection.
+#
+# Ce que la derive injectee fait reellement au modele fige est un afflux de
+# fausses alertes : a k = 2, le taux d'alertes median passe de 4,9 % a 28,6 %
+# (facteur median par machine 7,0) ; la precision apres t_d tombe de 0,24 a
+# k = 0,5 a 0,17 a k = 2, tandis que le rappel monte de 0,80 a 0,93 parce que
+# le detecteur alerte sur presque tout. Le rapport des
+# F1 reste journalise par ligne, mais il est lu comme indicatif.
+lecture:
+  # Perturbation attendue : le taux d'alertes apres t_d doit valoir au moins ce
+  # facteur du taux d'avant. C'est le meme critere qu'OBS03 pour la derive
+  # naturelle, ce qui rend les deux mesures comparables.
+  facteur_alertes_min: 3.0
+  # Au-dela de ce taux d'alertes, le detecteur fige alerte sur la quasi-totalite
+  # du flux : la derive est triviale a detecter et les strategies deviennent
+  # indiscernables.
+  taux_alertes_sature: 0.50
+  # Au-dela de cette part ecretee, la derive sature les metriques et devient
+  # detectable par une regle triviale.
+  part_ecretee_cible_max: 0.15
+  # Conserve a titre indicatif pour le comptage des machines degradees.
+  ratio_f1_cible_max: 0.85

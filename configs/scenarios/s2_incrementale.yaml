@@ -1,0 +1,19 @@
+# S2 — Derive INCREMENTALE (Gama et al., 2014).
+# Le comportement normal se deplace progressivement et de facon monotone vers le
+# nouveau regime, sans jamais revenir.
+# Equivalent sur le serveur personnel : montee durable du trafic sur plusieurs
+# heures.
+
+name: s2_incrementale
+transformation: scenarios/_transformation.yaml
+
+profil:
+  # a(t) monte lineairement de 0 a 1 sur `duree_fraction` du flux a partir de
+  # t_d, puis reste a 1.
+  type: rampe
+
+  # Duree de la transition, en part de la longueur du flux de test.
+  # Bornee a 25 % par D15 : au-dela, la transition mangerait le segment
+  # post-derive et le F1 apres derive ne serait plus calculable sur un regime
+  # stabilise.
+  duree_fraction: 0.25

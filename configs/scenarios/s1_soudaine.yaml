@@ -1,0 +1,11 @@
+# S1 — Derive SOUDAINE (Gama et al., 2014).
+# Le comportement normal change d'un coup et ne revient pas.
+# Equivalent sur le serveur personnel : deploiement d'une nouvelle version
+# (latence et RAM de base differentes a partir de l'instant du deploiement).
+
+name: s1_soudaine
+transformation: scenarios/_transformation.yaml
+
+profil:
+  # a(t) = 0 avant t_d, 1 a partir de t_d. Marche d'escalier.
+  type: marche

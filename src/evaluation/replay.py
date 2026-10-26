@@ -61,8 +61,26 @@ class ReplayStream:
     stride: int
     sampling_interval_seconds: int
 
+    # Verite terrain sur la derive injectee (None pour le scenario `none`).
+    # En indices de points de la serie d'origine, comme `end_index`.
+    drift_index: int | None = None
+    drift_end_index: int | None = None
+    drift_metadata: dict[str, Any] | None = None
+
     def __len__(self) -> int:
         return len(self.X)
+
+    def drift_window(self) -> int | None:
+        """Indice de la premiere fenetre touchee par la derive.
+
+        Les metriques raisonnent en fenetres, la derive est injectee en points :
+        la conversion retient la premiere fenetre dont le dernier point atteint
+        t_d. Les `window_size - 1` fenetres suivantes melangent les deux regimes,
+        c'est une consequence inevitable du fenetrage et non une approximation.
+        """
+        if self.drift_index is None:
+            return None
+        return int(np.searchsorted(self.end_index, self.drift_index, side="left"))
 
 
 @dataclass
@@ -297,6 +315,21 @@ def summary_row(
         "threshold_percentile": model["threshold"]["percentile"],
         "n_train_windows": len(stream.train_X),
     }
+    if stream.drift_metadata is not None:
+        # Parametres effectifs de l'injection, pour que chaque ligne de resultat
+        # porte la derive qu'elle a subie (D15 : part ecretee journalisee).
+        meta = stream.drift_metadata
+        row.update(
+            {
+                "drift_index": stream.drift_index,
+                "drift_window": stream.drift_window(),
+                "drift_end_index": stream.drift_end_index,
+                "drift_level_shift_k": meta.get("level_shift_k"),
+                "drift_scale_factor": meta.get("scale_factor"),
+                "drift_n_metriques": meta.get("n_metriques_touchees"),
+                "drift_part_ecretee": meta.get("part_ecretee"),
+            }
+        )
     row.update(outcome.result.to_row())
     return row
 

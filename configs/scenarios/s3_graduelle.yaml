@@ -1,0 +1,17 @@
+# S3 — Derive GRADUELLE (Gama et al., 2014).
+# Les deux regimes coexistent et alternent point par point ; la part de points
+# issus du nouveau regime passe de 0 a 1 sur la duree de transition.
+# C'est la difference avec S2 : la valeur ne se deplace pas progressivement,
+# elle saute entre deux regimes de plus en plus souvent.
+# Equivalent sur le serveur personnel : deploiement progressif (canari), part
+# croissante du trafic dirigee vers la nouvelle version.
+
+name: s3_graduelle
+transformation: scenarios/_transformation.yaml
+
+profil:
+  # a(t) vaut 0 ou 1, tire point par point (Bernoulli), avec une probabilite du
+  # nouveau regime qui monte lineairement de 0 a 1 sur `duree_fraction`.
+  # Les tirages sont fixes par la seed de l'execution.
+  type: graduel
+  duree_fraction: 0.25

@@ -7,6 +7,7 @@
 | M0 — Depot, SMD, features, Isolation Forest, evaluation sans derive | 2026-10-22 | 2026-10-22 | termine |
 | M0+ — Mesures preparatoires : derive naturelle a 28 machines, regles de P | 2026-10-22 | 2026-10-22 | termine |
 | M0++ — Calibrage des etapes 3 et 4 sur le perimetre de mise au point | 2026-10-26 | 2026-10-26 | termine |
+| M1 — Injection de derive S1 a S4, calibrage de l'amplitude, figures | 2026-10-26 | 2026-10-26 | termine |
 
 ## 2026-10-22
 - Initialisation du depot : arborescence, `pyproject.toml`, `uv.lock`, `ruff`, `pytest`, CLI `mdrift`.
@@ -151,7 +152,57 @@ mesures ont ete refaites sur le seul perimetre de mise au point.
 
 Etat du code : **70 tests passent**, `ruff` sans remarque.
 
-## Prochaine etape : M1
-Injection de derive S1 a S4 avec seeds, sur les 12 machines stables du perimetre d'evaluation
-(`configs/datasets/smd_eval.yaml`), les parametres etant regles au prealable sur le perimetre de mise
-au point (`configs/datasets/smd_dev.yaml`).
+## 2026-10-26 (suite) — M1 : injection de derive S1 a S4
+
+Jalon M1 realise dans la journee, apres M0++. Objectif : produire les quatre scenarios de derive du
+paragraphe 5 du cadrage, calibrer leur amplitude et montrer ce qu'ils font aux donnees.
+
+- **Une transformation, quatre profils.** `configs/scenarios/_transformation.yaml` porte l'amplitude
+  (decalage k, changement d'echelle, ecretage, plage de tirage de t_d), partagee par les quatre
+  scenarios ; `s1_soudaine`, `s2_incrementale`, `s3_graduelle` et `s4_recurrente` ne contiennent que
+  leur **profil temporel** a(t) et designent ce fichier. C'est la condition pour qu'un ecart de
+  performance entre deux scenarios soit attribuable au type de derive et a rien d'autre.
+- **Injection sur les 38 metriques brutes, avant fenetrage** (`scenarios/injection.py`), jamais sur
+  les 152 features. La moitie `train` n'est jamais transformee : mu_train et sigma_train restent le
+  comportement normal appris par le modele. Les etiquettes d'anomalie ne sont pas touchees.
+- **Defaut de conception trouve en lisant la premiere sortie** (D21) : avec la graine seule, toutes
+  les machines derivaient a la **meme position relative** du flux (0,418 a la graine 42). Les cinq
+  graines du cadrage n'exploraient donc que cinq positions au total. La graine inclut desormais la
+  machine, via `zlib.crc32` ; 47 positions distinctes sur 192 flux, de 0,4015 a 0,5942. L'appariement
+  entre strategies est preserve et deux tests l'encodent.
+- **Amplitude calibree** (D22) : `mdrift calibration-k`, 16 machines de mise au point, grille 0,5 a 8,
+  trois graines, 288 rejeux en 132 s -> `results/calibration_k_dev.csv`. **k = 2** retenu : 13 machines
+  sur 16 perturbees d'un facteur 3 au moins, 5 saturees, une seule au-dela de la cible d'ecretage.
+  k = 3 ne gagne qu'une machine perturbee pour deux saturees de plus. Parametre **fige avant** toute
+  execution sur les 12 machines d'evaluation.
+- **OBS09, resultat qui a oblige a changer de critere** : sous derive injectee, le modele fige ne perd
+  pas le rappel, il le **gagne** (0,93 a k = 2) et perd la precision (0,17). La degradation est un
+  afflux de fausses alertes. Le rapport F1 apres / F1 avant, prevu comme critere de calibrage, est
+  inexploitable ici : F1 avant nul sur 6 machines sur 16, et un rapport de 63,8 sur machine-2-7 dont
+  le F1 avant vaut 0,0070. Critere remplace par le taux d'alertes, qui est aussi celui d'OBS03.
+- **Audit des 192 flux** (`mdrift inject` -> `results/injections.csv`, 16 machines x 4 scenarios x 3
+  graines) : part ecretee mediane 6,1 %, maximum 25,98 %, aucun depassement du garde-fou de 35 %.
+- **Deux figures** (`mdrift scenario-figures`, PNG 300 dpi) : `docs/figures/profils_derive.png`, les
+  quatre profils a(t) seuls, pour le chapitre 5 ; `docs/figures/injection_scenarios.png`, la serie
+  d'origine et la serie derivee superposees sur une metrique reelle de machine-1-1, les quatre
+  scenarios cote a cote. La metrique affichee est choisie sur l'ecart **obtenu apres ecretage** et non
+  sur sigma_train, pour ne pas montrer une metrique plafonnee.
+- **Tests** : `tests/test_injection.py`, **26 cas** (instant et amplitude corrects, train intacte,
+  etiquettes intactes, profils a(t), ecretage et garde-fou, reproductibilite, decorrelation des
+  machines).
+
+- **Trou documentaire comble** (D23) : le choix du SMD lui-meme n'etait justifie nulle part. Six
+  criteres tires de la question du memoire, et les alternatives ecartees avec leur motif : SWaT
+  (capteurs d'un procede physique, acces sur demande nominative), SMAP et MSL (multivaries en
+  apparence seulement, un seul canal continu par entite), Yahoo S5 (univarie, anomalies en partie
+  synthetiques), traces de mon seul serveur (anomalies choisies par moi, une seule entite, non
+  reproductible par le jury). Trois marqueurs [A VERIFIER] laisses sur les citations de seconde main.
+
+Etat du code : **96 tests passent**, `ruff check` et `ruff format --check` sans remarque sur 40 fichiers.
+
+## Prochaine etape : M2
+Detecteurs de derive (PSI, KS, ADWIN, confirmation sur K fenetres), strategies B0, B1 et P, harnais de
+rejeu complet et metriques du paragraphe 7. Les seuils de derive et la persistance K se calibrent sur
+les 16 machines de mise au point, avec pour cible zero fausse confirmation sur les machines stables
+sans injection (D19). Rien n'est execute sur les 12 machines d'evaluation avant que ces parametres
+soient figes.
