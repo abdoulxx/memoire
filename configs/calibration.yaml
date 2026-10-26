@@ -1,0 +1,48 @@
+# Protocole des mesures de mise au point des etapes 3 et 4 de la strategie proposee.
+# Produit `results/calibration_dev.csv`, cite au chapitre 4 (D13, D14).
+#
+# Ces mesures ne portent QUE sur le perimetre de mise au point
+# (`configs/datasets/smd_dev.yaml`, D17). Elles utilisent les etiquettes de test
+# pour evaluer l'aval et pour separer les challengers sains des challengers
+# degrades : c'est admissible ici, et interdit sur le perimetre d'evaluation.
+
+# Fenetre candidate a l'entrainement du challenger, en nombre de fenetres.
+# 2 000 fenetres a 60 s = environ 33 h d'historique recent.
+w_train: 2000
+
+# Fenetre reservee a la validation, retiree de l'entrainement.
+v_valid: 500
+
+# Etape de confirmation imitee : taux d'alertes glissant >= confirm_ratio fois le
+# taux calibre, pendant confirm_k fenetres consecutives. Memes valeurs que le
+# criblage (configs/screening.yaml) pour que les deux mesures soient comparables.
+confirm_ratio: 5.0
+confirm_k: 30
+rolling: 500
+
+# Instants de reentrainement visites, en position relative dans le flux test.
+# Plusieurs instants sont indispensables : a la premiere confirmation, le champion
+# n'a presque pas encore alerte, donc les regles d'exclusion gardent les memes
+# fenetres et sont indistinguables. L'effondrement du challenger mesure en D13
+# apparait aux reentrainements tardifs, quand le champion sature.
+retrain_points: [0.2, 0.4, 0.6, 0.8]
+
+# Ajouter l'instant que donnerait l'etape de confirmation de la strategie.
+include_confirmation: true
+
+# En dessous de ce nombre de fenetres gardees, le reentrainement est declare
+# infaisable. Borne a justifier par `max_samples` du modele (voir D14).
+min_train_windows: 300
+
+# En dessous de ce nombre de fenetres en aval, le F1 aval n'est pas assez stable
+# pour comparer des challengers : la decision est ecartee de la mesure.
+min_downstream_windows: 2000
+
+# Graines du challenger. Trois suffisent ici : la mesure porte sur l'ecart entre
+# regles, et l'ecart-type inter-graines est rapporte a cote de chaque moyenne.
+seeds: [42, 7, 13]
+
+# Un challenger est dit "sain" si son F1 aval atteint au moins
+# (meilleur F1 aval de la machine - healthy_f1_margin). Sert uniquement a
+# calibrer les bornes du garde-fou, hors ligne.
+healthy_f1_margin: 0.05

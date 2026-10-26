@@ -69,6 +69,203 @@ def smd_info(
         )
 
 
+@app.command("smd-screening")
+def smd_screening(
+    dataset_config: str = typer.Option(
+        "datasets/smd_all.yaml", help="Configuration du dataset (28 machines par defaut)."
+    ),
+    features_config: str = typer.Option("features.yaml", help="Configuration des features."),
+    model_config: str = typer.Option("model.yaml", help="Configuration du modele."),
+    screening_config: str = typer.Option("screening.yaml", help="Parametres du criblage."),
+    seed: int = typer.Option(42, help="Seed de l'execution."),
+) -> None:
+    """Quantifie la derive naturelle du SMD machine par machine.
+
+    Ecrit `results/smd_screening.csv` : une ligne par machine, avec le rapport
+    entre taux d'alertes observe et taux calibre, l'instant de confirmation de la
+    derive et le profil des fausses alertes. Fichier cite au 6.2.1 du memoire
+    (OBS03, OBS04) et base du partage machines de mise au point / d'evaluation.
+    """
+    from src.evaluation.screening import SCREENING_PATH, screen, screening_summary
+
+    typer.echo(
+        f"{'machine':<14}{'rapport':>9}{'alertes':>9}{'fausses':>9}"
+        f"{'derive (h)':>12}{'KS eleve':>10}{'stable':>8}{'duree (s)':>11}"
+    )
+
+    def show(row: dict) -> None:
+        onset = row["derive_confirmee_heures"]
+        typer.echo(
+            f"{row['machine']:<14}{row['rapport_vs_calibre']:>8.2f}x"
+            f"{row['taux_alertes_test'] * 100:>8.2f}%"
+            f"{row['taux_fausses_alertes'] * 100:>8.2f}%"
+            f"{'aucune' if onset is None else f'{onset:.1f}':>12}"
+            f"{row['n_metriques_ks_eleve']:>10}"
+            f"{'oui' if row['stable'] else 'non':>8}{row['secondes']:>11.1f}"
+        )
+
+    table = screen(
+        dataset_config=dataset_config,
+        features_config=features_config,
+        model_config=model_config,
+        screening_config=screening_config,
+        seed=seed,
+        on_row=show,
+    )
+    summary = screening_summary(table)
+
+    typer.echo(
+        f"\n{summary['n_stables']} machines stables sur {summary['n_machines']} "
+        f"(rapport mediane {summary['rapport_median']}x, "
+        f"de {summary['rapport_min']}x a {summary['rapport_max']}x)."
+    )
+    typer.echo(
+        f"Derive confirmee sur {summary['n_derive_confirmee']} machines, "
+        f"dont {summary['n_derive_confirmee_parmi_stables']} parmi les stables."
+    )
+    typer.echo(f"-> {SCREENING_PATH.relative_to(PROJECT_ROOT_DISPLAY)}")
+
+
+@app.command("calibration")
+def calibration(
+    dataset_config: str = typer.Option(
+        "datasets/smd_dev.yaml", help="Perimetre de mise au point (D17)."
+    ),
+    features_config: str = typer.Option("features.yaml", help="Configuration des features."),
+    model_config: str = typer.Option("model.yaml", help="Configuration du modele."),
+    calibration_config: str = typer.Option("calibration.yaml", help="Parametres du protocole."),
+    detail: bool = typer.Option(False, help="Afficher le detail par decision."),
+) -> None:
+    """Mesure les etapes 3 et 4 de la strategie proposee sur les machines de mise au point.
+
+    Repond a trois questions, sur le seul perimetre de mise au point : reentrainer
+    bat-il le champion fige, faut-il exclure les anomalies au reentrainement (D13),
+    et un critere sans etiquettes peut-il classer deux challengers (D14) ? Produit
+    en outre les bornes du garde-fou de l'etape 4. Ecrit `results/calibration_dev.csv`.
+
+    Prerequis : `mdrift baseline --dataset-config datasets/smd_dev.yaml`.
+    """
+    from src.config import load_config
+    from src.evaluation.calibration import (
+        CALIBRATION_PATH,
+        calibrate,
+        exclusion_verdict,
+        guardrail_bounds,
+        retrain_verdict,
+        validation_verdict,
+    )
+
+    typer.echo(
+        f"{'machine':<14}{'instant':>14}{'t_r (h)':>10}{'aval':>8}"
+        f"{'positifs':>10}{'F1 champion':>13}"
+    )
+
+    def show(context: dict) -> None:
+        if context.get("raison"):
+            typer.echo(
+                f"{context['machine']:<14}{context['instant']:>14}"
+                f"{context['t_r_heures']:>10.1f}   {context['raison']}"
+            )
+            return
+        typer.echo(
+            f"{context['machine']:<14}{context['instant']:>14}{context['t_r_heures']:>10.1f}"
+            f"{context['aval_n_fenetres']:>8}"
+            f"{context['aval_taux_positif'] * 100:>9.1f}%"
+            f"{context['champion_aval_f1']:>13.4f}"
+        )
+
+    table = calibrate(
+        dataset_config=dataset_config,
+        features_config=features_config,
+        model_config=model_config,
+        calibration_config=calibration_config,
+        on_context=show,
+    )
+    if table.empty:
+        typer.echo("Aucune decision exploitable.")
+        raise typer.Exit(code=1)
+
+    retrain = retrain_verdict(table)
+    typer.echo(
+        f"\nReentrainement — sans exclusion, le challenger bat le champion fige sur "
+        f"{retrain['n_bat_le_champion']}/{retrain['n_decisions']} decisions ; "
+        f"rapport de F1 median x{retrain['gain_median']:.2f} "
+        f"(de x{retrain['gain_min']:.2f} a x{retrain['gain_max']:.2f})."
+    )
+
+    exclusion = exclusion_verdict(table)
+    typer.echo(
+        f"\nD13 — exclusion : sur {exclusion['n_decisions']} decisions "
+        f"({exclusion['n_machines']} machines), ne rien exclure est optimal "
+        f"{exclusion['n_fois_R0_optimale']} fois ; ecart median au meilleur "
+        f"{exclusion['ecart_median_au_meilleur']:.4f} point de F1, maximum "
+        f"{exclusion['ecart_max_au_meilleur']:.4f}."
+    )
+    typer.echo(
+        f"           ecart-type inter-graines : median "
+        f"{exclusion['ecart_type_inter_graines_median']:.4f}, maximum "
+        f"{exclusion['ecart_type_inter_graines_max']:.4f}."
+    )
+    typer.echo(
+        f"           exclure toutes les alertes est distincte sur "
+        f"{exclusion['n_R1_distincte']} decisions et s'effondre "
+        f"(moins de la moitie du F1) sur {exclusion['n_R1_effondrement']} :"
+    )
+    for case in exclusion["effondrements"]:
+        typer.echo(
+            f"             {case['machine']:<14}{case['instant']:>12}  garde "
+            f"{case['part_gardee'] * 100:5.1f} %  F1 {case['f1_R1']:.4f} "
+            f"contre {case['f1_R0']:.4f}  (x{case['ratio']:.2f})"
+        )
+
+    validation = validation_verdict(table)
+    typer.echo(
+        f"\nD14 — validation : sur {validation['n_decisions']} decisions a trois "
+        f"challengers distincts ou plus, Spearman median critere/F1 aval "
+        f"c1 {validation['rho_c1_median']:+.2f} ({validation['n_rho_c1_positif']} au signe "
+        f"positif), c2 {validation['rho_c2_median']:+.2f} "
+        f"({validation['n_rho_c2_positif']}). On attend du negatif."
+    )
+    typer.echo(
+        f"           choisir par c1 coute "
+        f"{validation['perte_f1_mediane_du_choix_c1'] * 100:.1f} % du F1 atteignable en "
+        f"median, jusqu'a {validation['perte_f1_max_du_choix_c1'] * 100:.1f} % ; "
+        f"c1 choisit le pire candidat {validation['n_choix_est_le_pire']} fois."
+    )
+    if detail:
+        for case in validation["par_decision"]:
+            typer.echo(
+                f"             {case['machine']:<14}{case['instant']:>12}"
+                f"{case['n_candidats']:>4} cand."
+                f"  rho_c1 {case['rho_c1']:+.2f}  rho_c2 {case['rho_c2']:+.2f}"
+                f"  F1 choisi {case['f1_du_choix']:.4f} / "
+                f"meilleur {case['f1_du_meilleur']:.4f}"
+            )
+
+    bounds = guardrail_bounds(table, load_config(model_config))
+    typer.echo(
+        f"\nGarde-fou — {bounds['n_sains']} challengers sains "
+        f"(taux d'alertes sur la fenetre reservee de {bounds['sain_taux_min'] * 100:.2f} % "
+        f"a {bounds['sain_taux_max'] * 100:.2f} %), {bounds['n_degrades']} degrades "
+        f"(de {bounds['degrade_taux_min'] * 100:.2f} % a "
+        f"{bounds['degrade_taux_max'] * 100:.2f} %)."
+    )
+    if bounds.get("n_degrades"):
+        typer.echo(
+            f"           bornes proposees : alert_rate_min "
+            f"{bounds['alert_rate_min_propose'] * 100:.2f} %, alert_rate_max "
+            f"{bounds['alert_rate_max_propose'] * 100:.2f} %, min_train_windows "
+            f"{bounds['min_train_windows']}."
+        )
+        typer.echo(
+            f"           elles ecartent {bounds['degrades_ecartes_par_borne_haute']} degrades "
+            f"par le haut et {bounds['degrades_ecartes_par_borne_basse']} par le bas ; "
+            f"{bounds['degrades_non_ecartes']} degrades passent. "
+            f"Separation complete : {'oui' if bounds['separation_complete'] else 'non'}."
+        )
+    typer.echo(f"-> {CALIBRATION_PATH.relative_to(PROJECT_ROOT_DISPLAY)}")
+
+
 @app.command("baseline")
 def baseline(
     machine: str = typer.Option("all", help="Nom d'une machine SMD, ou 'all'."),

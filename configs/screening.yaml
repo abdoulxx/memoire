@@ -1,0 +1,59 @@
+# Criblage des machines SMD : quantification de la derive naturelle du dataset.
+# Produit `results/smd_screening.csv`, cite au 6.2.1 du memoire (OBS03, OBS04).
+# Aucune de ces valeurs n'est en dur dans le code.
+
+rolling:
+  # Largeur de la moyenne glissante du taux d'alertes, en nombre de fenetres.
+  windows: 500
+
+  # Position de la moyenne. `causal` : la valeur a l'indice i est la moyenne des
+  # `windows` dernieres fenetres, celles qui precedent i. C'est la seule position
+  # admissible ici, car une moyenne centree anticipe de windows / 2 fenetres
+  # (4,2 h pour 500 fenetres a 60 s) et datait a tort le debut de la derive.
+  # Voir docs/decisions.md, OBS03.
+  position: causal
+
+  # Alertes comptees dans la moyenne. `false_only` : alertes emises sur des
+  # fenetres etiquetees negatives, conformement a configs/evaluation.yaml.
+  # Compter toutes les alertes confond la derive avec les anomalies etiquetees :
+  # sur machine-3-1, le premier depassement tombait alors exactement sur
+  # l'anomalie 20,1 h - 20,6 h.
+  counted_alerts: false_only
+
+drift_onset:
+  # Debut de la derive = premier instant ou le taux de fausses alertes glissant
+  # depasse `ratio_vs_calibrated` fois le taux calibre par le seuil
+  # (configs/model.yaml : 99e percentile, soit 1 % attendu) ...
+  ratio_vs_calibrated: 5.0
+  # ... et s'y maintient pendant `consecutive_windows` fenetres consecutives.
+  # Cette persistance distingue une derive durable d'une anomalie passagere :
+  # c'est la meme logique que l'etape 2 de la strategie proposee.
+  consecutive_windows: 30
+
+stability:
+  # Une machine est dite stable si son taux d'alertes sur la moitie `test` reste
+  # sous `max_ratio_vs_calibrated` fois le taux calibre. Les machines stables
+  # servent de support aux scenarios S1 a S4 : la derive injectee doit dominer
+  # la derive naturelle pour que le resultat soit interpretable.
+  max_ratio_vs_calibrated: 3.0
+
+  # Alertes retenues pour ce critere, meme logique que `rolling.counted_alerts` :
+  # une alerte sur une fenetre positive est une detection reussie et ne temoigne
+  # d'aucune derive. Compter toutes les alertes classait machine-3-10 instable
+  # (3,95x) alors que ses fausses alertes ne representent que 0,45 %.
+  # Valeurs : false_alerts | all_alerts.
+  basis: false_alerts
+
+distribution_shift:
+  # Statistique de Kolmogorov-Smirnov par metrique brute entre les deux moities.
+  # Une metrique est comptee en derive au-dela de ce seuil.
+  # Indicateur descriptif seulement : OBS04 montre qu'il concorde mal avec le
+  # taux d'alertes (Spearman +0,25). Les detecteurs de M2 porteront sur les features.
+  ks_statistic_threshold: 0.5
+  ks_method: asymp     # p-valeur asymptotique : exacte trop couteuse a n ~ 28 000
+
+profile:
+  # Profil du taux de fausses alertes par tranches, pour decrire la forme de la
+  # derive (OBS03). Ecrit dans une colonne texte du CSV.
+  slice_hours: 10
+  max_slices: 13

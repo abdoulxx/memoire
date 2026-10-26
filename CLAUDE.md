@@ -1,7 +1,7 @@
 # CLAUDE.md — Projet expérimental du mémoire
 
 > Fichier de cadrage pour Claude Code (et pour moi). À placer à la racine du dépôt.
-> Mémoire de Master 2 IUA — SAMB Abdoulaye Sidy — 2025-2026. Version 2 (18 octobre 2026).
+> Mémoire de Master 2 IUA — SAMB Abdoulaye Sidy — 2025-2026. Version 2.4 (22 octobre 2026) — décisions de Sidy après M0 : 15 machines stables (dont 12 d'évaluation), aucune exclusion, validation = garde-fou.
 
 ## 1. De quoi parle ce projet
 
@@ -110,10 +110,18 @@ Vérifier les API au moment de l'implémentation (river, MLflow) et **épingler 
 
 ### 4.1 SMD (source principale)
 - Dépôt : `NetManAIOps/OmniAnomaly` sur GitHub, dossier `ServerMachineDataset`, licence MIT.
-- 28 machines (3 groupes, `machine-<groupe>-<index>`), 38 métriques, environ 5 semaines. Chaque machine est découpée en deux moitiés : `train` (sans étiquettes, supposé majoritairement normal) et `test` (avec `test_label` point par point et `interpretation_label`). Intervalle d'échantillonnage : **à vérifier dans le README du dépôt**.
+- 28 machines (3 groupes, `machine-<groupe>-<index>`), 38 métriques, environ 5 semaines. Chaque machine est découpée en deux moitiés : `train` (sans étiquettes, supposé majoritairement normal) et `test` (avec `test_label` point par point et `interpretation_label`). Intervalle d'échantillonnage : **1 minute** (non indiqué dans le README ; source : Garg et al., IEEE TNNLS 2022, + vérification empirique, décision D06).
 - **Le SMD étiquette les anomalies, pas les dérives** : la dérive est injectée par nous (§5), à un instant connu.
 - Utilisation : entraînement initial sur `train` ; flux évalué = `test` avec dérive injectée.
-- Démarrer avec **3 machines (une par groupe)** ; étendre aux 28 si le temps le permet. Noter les machines choisies dans `configs/datasets/smd.yaml`.
+- **Dérive naturelle (OBS03)** : la moitié test diffère déjà de la moitié train sur 15 machines sur 28 (taux d'alertes de B0 ≥ 3× le taux calibré). Décision du 22/10/2026 :
+  - Le critère porte sur les **fausses alertes** (alertes sur fenêtres étiquetées négatives), pas sur les alertes totales : une alerte sur une fenêtre positive est une détection réussie et ne témoigne d'aucune dérive. Compter toutes les alertes classait `machine-3-10` instable (3,95×) alors que ses fausses alertes ne font que 0,45 %.
+  - **Mise au point** — `configs/datasets/smd_dev.yaml`, **16 machines** : les 13 instables, plus 3 stables tirées avec la graine 42 (machine-1-3, machine-2-7, machine-3-10). Réglage de k, K, δ, des bornes du garde-fou et des seuils de dérive.
+  - **Évaluation S1–S4** — `configs/datasets/smd_eval.yaml`, **12 machines** : machine-1-2, 1-4, 1-7, 2-1, 2-2, 2-3, 2-4, 2-5, 3-2, 3-3, 3-4, 3-7. Les paramètres sont **figés avant** la première exécution sur ce périmètre.
+  - **Étude de la dérive naturelle** (scénario `none`, sans injection, 4 stratégies) : les 13 machines instables, qui sont dans le périmètre de mise au point.
+  - D13 et D14 ont été décidés avant ce partage, en partie sur machine-2-1, qui est une machine d'évaluation. Mesures refaites sur le seul périmètre de mise au point (`mdrift calibration` → `results/calibration_dev.csv`).
+  - Ne jamais régler un paramètre en regardant les étiquettes d'une machine d'évaluation.
+  - Criblage reproductible : `mdrift smd-screening` → `results/smd_screening.csv` (cité par le mémoire). Lecture des fichiers avec `pandas.read_csv` (np.loadtxt trop lent).
+  - Les machines d'un même groupe sont corrélées (3-1 / 3-9 : 0,80) : moyenner par machine sur les graines avant les tests, rapporter aussi par groupe.
 - Citer : Su et al. (2019), KDD (déjà dans la bibliographie du mémoire).
 
 ### 4.2 Mon serveur (test final et démonstration)
@@ -156,6 +164,7 @@ Une dérive = un **changement durable** du comportement normal ; une anomalie = 
 | S4 | Récurrente | Alternance périodique entre régime d'origine et régime transformé | Alternance de régimes de charge (jour / nuit simulés) |
 
 - Les anomalies étiquetées d'origine sont conservées, **avant et après** la dérive.
+- Règles d'injection : métriques de M tirées parmi celles de σ_train > 0 ; décalage **positif** ; valeurs **écrêtées à [0, 1]** (saturation physique ; une valeur > 1 rendrait la dérive triviale), part écrêtée enregistrée dans `summary.csv` ; *t*<sub>d</sub> tiré uniformément dans **[40 %, 60 %]** du flux test ; *D* ≤ **25 %** du flux (S2, S3). Calibrer k sur les machines de mise au point (dégradation de B0 en fonction de k).
 - Tous les paramètres (*t*<sub>d</sub>, *k*, *D*, métriques touchées, période) sont dans `configs/scenarios/*.yaml` ; la seed fixe *t*<sub>d</sub> et le choix des métriques.
 - Cible : **5 seeds par scénario et par machine** ; résultats en moyenne ± écart-type.
 - Sur le serveur : enregistrer les sessions une fois (Parquet + labels), puis les **rejouer** pour chaque stratégie.
@@ -174,11 +183,11 @@ Toutes partagent : même modèle, mêmes features, même entraînement initial, 
 | A1 | *(ablation, option)* P sans l'étape de validation | Montre ce que la validation apporte |
 
 ### Détail de la stratégie proposée (P)
-1. **Surveillance** : à chaque fenêtre, comparer la distribution récente des features à celle de l'entraînement du modèle courant (PSI / KS par feature) et suivre le taux d'alertes (ADWIN).
+1. **Surveillance** : à chaque fenêtre, comparer la distribution récente des **152 features** (pas des 38 métriques brutes) à celle de l'entraînement du modèle courant (PSI / KS par feature) et suivre le taux d'alertes (ADWIN). Règle d'agrégation : **part des features dont la statistique de KS (ou le PSI) dépasse un seuil**, comparée à une part déclenchante. Pas de correction de Bonferroni : sur `machine-1-2`, machine stable, 109 des 152 features rejettent au seuil de Bonferroni — les p-valeurs n'ont aucune spécificité à 20 000 points — et les 152 tests ne sont pas indépendants (rang effectif 120 à 131). La statistique, elle, discrimine : 0,0 % de features au-delà de KS 0,5 sur machine-1-2, 9,2 % sur machine-2-1, 26,3 % sur machine-3-1 (D18). Les features constantes sur la fenêtre d'entraînement sont exclues du calcul. Le taux d'alertes seul est un signal secondaire : avec K = 30, il « confirme » une dérive sur 26 des 28 machines, dont 13 des 15 machines stables — K = 30 fenêtres ne valant que 30 minutes, la persistance exigée est trop faible (D19).
 2. **Confirmation** : la dérive n'est retenue que si le signal persiste **K fenêtres consécutives** (dérive durable ≠ anomalie passagère).
-3. **Réentraînement** : nouveau modèle (challenger) sur les *W* dernières minutes, **en excluant les fenêtres signalées comme anomalies**.
-4. **Validation** : challenger contre champion sur une fenêtre récente réservée ; critère dans `configs/strategies/proposed.yaml`.
-5. **Promotion** : si validé, le challenger devient `champion` dans le registre MLflow ; sinon rejet journalisé. En mode en ligne, option `human_approval: true` pour le bonus Telegram.
+3. **Réentraînement** : nouveau modèle (challenger) sur les *W* dernières minutes, hors fenêtre réservée *V*, **sans exclusion par défaut** (`exclusion.method: none`). Exclure les alertes du champion fait s'effondrer le challenger sous saturation (mesuré à M0) ; les variantes `top_percentile` et `champion_alerts` restent implémentées pour l'ablation.
+4. **Validation = garde-fou, pas concours** : sans étiquettes, aucun critère ne classe fiablement deux détecteurs (mesuré ; Ma et al., 2023). Rejet si historique < 300 fenêtres, taux d'alertes sur *V* hors [0,1 % ; 30 %], ou seuil dégénéré. Bornes à calibrer sur les machines de mise au point. **Aucune étiquette** dans une décision de la stratégie.
+5. **Promotion** : si le garde-fou est passé, le challenger devient `champion` dans le registre MLflow ; sinon rejet journalisé. En mode en ligne, option `human_approval: true` pour le bonus Telegram.
 6. **Refroidissement** : aucun réentraînement pendant *C* minutes après une promotion.
 
 Tous les paramètres (*T*, *K*, *W*, *C*, seuils) sont dans des YAML. **Aucune valeur en dur.** Les valeurs retenues finissent dans un tableau du chapitre 4.
@@ -200,6 +209,8 @@ Tous les paramètres (*T*, *K*, *W*, *C*, seuils) sont dans des YAML. **Aucune v
 | | Délai de détection de la dérive | Début réel de la dérive → confirmation (stratégie P) |
 | Coût | Nombre de réentraînements | Total, promus, rejetés |
 | | Temps de calcul cumulé | Secondes CPU passées à réentraîner |
+| Fiabilité des mises à jour | Promotions dégradantes | Promotions après lesquelles le modèle promu obtient, sur les N = 500 fenêtres suivantes, un F1 inférieur de plus de δ à celui du modèle remplacé (δ calibré sur l'écart-type inter-graines à M2 ; rapporter aussi la distribution des écarts). Ancien modèle scoré **en parallèle (shadow)** en un bloc par promotion ; calcul **hors ligne** à partir des traces ; coût **exclu** du temps de calcul de la stratégie. Sert à tester H3 (P contre A1) |
+| Spécificité de la surveillance | Fausses confirmations de dérive | Confirmations de dérive sur les machines stables sans injection (scénario `none`), en valeur absolue et par machine. Sans elle, l'étape de confirmation n'est pas évaluable : un moniteur qui confirme tout le temps obtient un excellent délai de détection. Référence à battre : 13 fausses confirmations sur 15 machines stables (D19) |
 
 Évaluation **prequentielle** : chaque fenêtre est d'abord scorée par le modèle courant, puis utilisée (ou non) pour la suite. Aucune fuite d'information du futur vers le passé.
 Test statistique entre P et B1 sur les seeds (ex. Wilcoxon apparié) si les écarts sont faibles.
@@ -248,6 +259,7 @@ memoire-drift/
 - Chaque exécution : un `run_id`, une seed fixée, la config complète sauvegardée à côté des résultats.
 - Interfaces simples : `Detector.fit / score`, `DriftMonitor.update -> bool`, `Strategy.on_window(window) -> Decision`, `Notifier.send(event)`.
 - Journal d'événements en JSON lignes : `{ts, run_id, strategy, event, details}` avec `event ∈ {alert, drift_signal, drift_confirmed, retrain_start, retrain_end, promoted, rejected}`. Telegram et Grafana consomment ces mêmes événements.
+- Mesurer le **temps de traitement d'une fenêtre** (lecture, features, score, surveillance de dérive ; hors réentraînement). En rejeu, le scoring par blocs (décision D10) ne donne qu'un temps amorti : ajouter `window_ms_amortized = 1000 × wall_seconds / n_windows` dans `summary.csv`. La vraie mesure par fenêtre (`window_ms_mean`, `window_ms_p95`) se fait dans la boucle en ligne (M5), exposée en jauge à Prometheus. Sert aux indicateurs I7 / T1 du chapitre 2 (temps réel : traitement < intervalle de collecte).
 - Notifications Telegram : regroupement (pas plus d'un message par minute et par type) pour éviter le spam.
 - Tests minimum : fenêtrage, métriques (cas calculés à la main), injection de dérive (instant et amplitude corrects), stratégie P (déclenche après K fenêtres, respecte le refroidissement), rejeu (même seed = même résultat).
 
@@ -259,7 +271,7 @@ Chaque jalon produit quelque chose d'utilisable dans le mémoire. **Les résulta
 
 | Jalon | Contenu | Livrable pour le mémoire |
 |---|---|---|
-| M0 | Dépôt, chargement du SMD, features, Isolation Forest, évaluation sans dérive | Performance de référence en régime stable (6.2.1) |
+| M0 | Dépôt, chargement du SMD, features, Isolation Forest, évaluation sans dérive injectée | Performance de référence sans dérive injectée (6.2.1) — **terminé le 22/10/2026** |
 | M1 | Injection de dérive S1–S4 avec seeds | Figures de chaque scénario |
 | M2 | Détecteurs de dérive + stratégies B0, B1, P + harnais de rejeu + métriques | **Résultats principaux** (6.2.2 à 6.2.4) |
 | M3 | Campagne complète : machines × scénarios × stratégies × seeds (+ ablation, + autoencodeur en option) | Tableaux finaux et graphiques |

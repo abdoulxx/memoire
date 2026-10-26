@@ -1,0 +1,46 @@
+# Server Machine Dataset — perimetre d'evaluation S1-S4 (D17).
+# Variante de `smd.yaml` dont seule la liste `machines` differe.
+name: smd
+source:
+  repo: NetManAIOps/OmniAnomaly
+  ref: master
+  path: ServerMachineDataset
+  base_url: https://raw.githubusercontent.com/NetManAIOps/OmniAnomaly/master/ServerMachineDataset
+  license: MIT
+  citation: Su, Y., Zhao, Y., Niu, C., Liu, R., Sun, W., & Pei, D. (2019). Robust
+    Anomaly Detection for Multivariate Time Series through Stochastic Recurrent Neural
+    Network. KDD '19.
+# MACHINES D'EVALUATION. Perimetre des resultats S1-S4 du chapitre 6 : les machines
+# stables au sens de results/smd_screening.csv qui n'ont pas servi a la mise au point.
+# Les parametres doivent etre figes AVANT toute execution sur ce perimetre.
+# Voir docs/decisions.md, D17.
+machines:
+  - machine-1-2
+  - machine-1-4
+  - machine-1-7
+  - machine-2-1
+  - machine-2-2
+  - machine-2-3
+  - machine-2-4
+  - machine-2-5
+  - machine-3-2
+  - machine-3-3
+  - machine-3-4
+  - machine-3-7
+
+# Sous-dossiers du dataset. `train` est sans etiquettes (suppose majoritairement normal),
+# `test` est etiquete point par point par `test_label`.
+parts:
+  train: train
+  test: test
+  test_label: test_label
+  interpretation_label: interpretation_label
+
+# Repertoire local (ignore par git, voir .gitignore)
+raw_dir: data/raw/smd
+
+# Caracteristiques attendues, verifiees au chargement
+expected_n_features: 38
+
+# Intervalle d'echantillonnage, en secondes (voir docs/decisions.md, D06).
+sampling_interval_seconds: 60

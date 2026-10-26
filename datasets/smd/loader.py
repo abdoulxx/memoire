@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from src.config import load_config, resolve_path
 
@@ -56,12 +57,21 @@ class SMDMachine:
 
 
 def _read_matrix(path: Path) -> np.ndarray:
-    return np.loadtxt(path, delimiter=",", dtype=np.float64, ndmin=2)
+    """Lit un CSV sans en-tete en matrice (n_points, n_metriques).
+
+    `pandas.read_csv` plutot que `numpy.loadtxt` : environ 30x plus rapide, ce qui
+    compte des que l'on crible les 28 machines (112 fichiers, 464 Mio).
+    """
+    frame = pd.read_csv(path, header=None, dtype=np.float64)
+    return np.atleast_2d(frame.to_numpy())
 
 
 def _read_labels(path: Path) -> np.ndarray:
-    labels = np.loadtxt(path, delimiter=",", dtype=np.int64, ndmin=1)
-    unexpected = set(np.unique(labels)) - {0, 1}
+    frame = pd.read_csv(path, header=None, dtype=np.int64)
+    if frame.shape[1] != 1:
+        raise ValueError(f"{path} : {frame.shape[1]} colonnes, une seule attendue.")
+    labels = frame.to_numpy().ravel()
+    unexpected = set(np.unique(labels).tolist()) - {0, 1}
     if unexpected:
         raise ValueError(f"Etiquettes non binaires dans {path} : {sorted(unexpected)}")
     return labels
