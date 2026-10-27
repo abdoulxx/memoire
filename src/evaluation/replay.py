@@ -4,7 +4,7 @@ C'est la piece centrale du dispositif experimental : le **meme** flux de fenetre
 est rejoue a l'identique pour chaque strategie, de sorte qu'un ecart de
 performance soit attribuable a la strategie et a rien d'autre.
 
-Trois garanties, qui font la validite de la comparaison :
+Quatre garanties, qui font la validite de la comparaison :
 
 1. **Meme flux** : le flux est construit une fois (donnees + derive injectee +
    seed) et passe tel quel a chaque strategie.
@@ -13,12 +13,36 @@ Trois garanties, qui font la validite de la comparaison :
    remonte vers le passe.
 3. **Tout est identique sauf la strategie** : memes features, meme modele, meme
    entrainement initial, meme regle de seuil.
+4. **Aucune etiquette ne traverse la frontiere** : le harnais detient `stream.y`
+   et ne le passe jamais a la strategie. Il ne lui transmet que des
+   `WindowContext` et des `ValidationStats`, dont aucune signature ne comporte
+   de champ d'etiquette. C'est ce qui rend verifiable la regle du §6 : aucune
+   etiquette dans une decision de la strategie.
 
-Note d'implementation : entre deux reentrainements, le modele en service ne
-change pas. Le harnais score donc par blocs plutot que fenetre par fenetre, ce
-qui est **exactement equivalent** au scoring point par point et evite des
-dizaines de milliers d'appels unitaires a scikit-learn. La boucle de decision,
+Cycle d'un reentrainement, du cote du harnais :
+
+    decision = strategy.on_window(ctx)       # faut-il reentrainer ?
+    plan     = strategy.propose(history, i)  # quelles donnees, quelle fenetre V
+    challenger.fit(plan.train_X)             # le HARNAIS entraine
+    stats    = mesures sans etiquette sur V  # le HARNAIS mesure
+    verdict  = strategy.validate(stats)      # mise en service ou rejet
+    si promu : champion = challenger, puis strategy.on_fit(plan.train_X, i)
+
+Note d'implementation : entre deux promotions, le modele en service ne change
+pas. Le harnais score donc par blocs plutot que fenetre par fenetre, ce qui est
+**exactement equivalent** au scoring point par point et evite des dizaines de
+milliers d'appels unitaires a scikit-learn. Un rejet ne change pas le modele :
+le bloc deja calcule reste valide et n'est pas recalcule. La boucle de decision,
 elle, reste bien sequentielle.
+
+Consequence a assumer : le temps mesure par fenetre n'est qu'un temps **amorti**
+(`window_ms_amortized` dans `summary.csv`). La vraie mesure par fenetre se fait
+dans la boucle en ligne (M5).
+
+Scoring fantome (D16) : a chaque promotion, le modele remplace est encore scoré
+sur les N fenetres suivantes, en un seul bloc, pour permettre le calcul **hors
+ligne** des promotions degradantes. Ce cout est exclu du cout de la strategie et
+du temps de rejeu : c'est un instrument de mesure, pas une piece du pipeline.
 """
 
 from __future__ import annotations
@@ -38,8 +62,9 @@ import yaml
 from datasets.smd.loader import AnomalyEvent
 from src.config import PROJECT_ROOT
 from src.evaluation.metrics import CostMetrics, EvaluationResult, evaluate
+from src.evaluation.promotions import evaluate_promotions
 from src.models.isolation_forest import IsolationForestDetector, build_detector
-from src.strategies.base import Strategy, WindowContext
+from src.strategies.base import Strategy, ValidationStats, WindowContext
 
 RESULTS_DIR = PROJECT_ROOT / "results"
 SUMMARY_PATH = RESULTS_DIR / "summary.csv"
@@ -84,6 +109,43 @@ class ReplayStream:
 
 
 @dataclass
+class ShadowTrace:
+    """Traces du modele remplace apres chaque promotion (D16).
+
+    Stockage aplati : les scores de toutes les promotions sont concatenes et
+    `lengths` permet de retrouver le segment de chacune. C'est le format que
+    `np.savez_compressed` accepte sans ruse, et il se relit en deux lignes.
+
+    Le calcul des promotions degradantes est fait **hors ligne** depuis ces
+    traces (`src/evaluation/promotions.py`), jamais pendant le rejeu : la
+    strategie ne doit pas pouvoir en dependre.
+    """
+
+    positions: list[int] = field(default_factory=list)
+    starts: list[int] = field(default_factory=list)
+    lengths: list[int] = field(default_factory=list)
+    thresholds: list[float] = field(default_factory=list)
+    scores: list[np.ndarray] = field(default_factory=list)
+
+    def add(self, position: int, start: int, threshold: float, scores: np.ndarray) -> None:
+        self.positions.append(int(position))
+        self.starts.append(int(start))
+        self.lengths.append(int(len(scores)))
+        self.thresholds.append(float(threshold))
+        self.scores.append(np.asarray(scores, dtype=np.float64))
+
+    def as_arrays(self) -> dict[str, np.ndarray]:
+        concatenated = np.concatenate(self.scores) if self.scores else np.empty(0, dtype=np.float64)
+        return {
+            "shadow_positions": np.asarray(self.positions, dtype=np.int64),
+            "shadow_starts": np.asarray(self.starts, dtype=np.int64),
+            "shadow_lengths": np.asarray(self.lengths, dtype=np.int64),
+            "shadow_thresholds": np.asarray(self.thresholds, dtype=np.float64),
+            "shadow_scores": concatenated,
+        }
+
+
+@dataclass
 class ReplayOutcome:
     """Resultat d'un rejeu : metriques, traces et journal d'evenements."""
 
@@ -94,9 +156,25 @@ class ReplayOutcome:
     scores: np.ndarray
     alerts: np.ndarray
     thresholds: np.ndarray
+    # Indice de la fenetre a partir de laquelle chaque modele est en service :
+    # 0 pour le modele initial, puis l'indice de chaque promotion.
+    model_changes: list[int] = field(default_factory=list)
+    shadow: ShadowTrace = field(default_factory=ShadowTrace)
     event_log: list[dict[str, Any]] = field(default_factory=list)
     started_at: str = ""
     wall_seconds: float = 0.0
+    shadow_seconds: float = 0.0
+
+    @property
+    def window_ms_amortized(self) -> float:
+        """Temps amorti par fenetre, en millisecondes.
+
+        Amorti et non mesure : le scoring par blocs (voir l'en-tete du module)
+        interdit d'attribuer un temps a une fenetre precise. La mesure reelle
+        (`window_ms_mean`, `window_ms_p95`) viendra de la boucle en ligne.
+        """
+        n = len(self.scores)
+        return 0.0 if n == 0 else 1000.0 * self.wall_seconds / n
 
 
 def _now() -> str:
@@ -106,6 +184,13 @@ def _now() -> str:
 def make_run_id(stream: ReplayStream, strategy_name: str, seed: int) -> str:
     """Identifiant stable : deux executions de memes parametres portent le meme nom."""
     return f"{stream.source}_{stream.machine}_{stream.scenario}_{strategy_name}_seed{seed}"
+
+
+def _alert_rate(scores: np.ndarray, threshold: float) -> float:
+    """Taux d'alertes d'un modele sur un bloc de fenetres. Aucune etiquette requise."""
+    if len(scores) == 0:
+        return float("nan")
+    return float(np.count_nonzero(scores > threshold) / len(scores))
 
 
 def replay(
@@ -133,11 +218,14 @@ def replay(
             }
         )
 
+    shadow_windows = int(evaluation_config.get("promotions", {}).get("shadow_windows", 500))
+
     record("run_start", n_windows=len(stream), n_train_windows=len(stream.train_X))
 
     # Entrainement initial : identique pour toutes les strategies, a seed egale.
     detector: IsolationForestDetector = build_detector(model_config, features_config, seed)
     detector.fit(stream.train_X)
+    strategy.on_fit(stream.train_X, 0)
     record(
         "initial_fit",
         seconds=round(detector.fit_seconds, 3),
@@ -150,14 +238,17 @@ def replay(
     alerts = np.zeros(n, dtype=np.int64)
     thresholds = np.empty(n, dtype=np.float64)
     cost = CostMetrics()
+    shadow = ShadowTrace()
+    shadow_seconds = 0.0
+    model_changes: list[int] = [0]
 
     position = 0
     while position < n:
-        # Le modele en service est constant jusqu'au prochain reentrainement :
+        # Le modele en service est constant jusqu'a la prochaine promotion :
         # on score le reste du flux en un bloc, puis on decide sequentiellement.
         block = detector.score(stream.X[position:])
         threshold = detector.threshold
-        retrained_at: int | None = None
+        promoted_at: int | None = None
 
         for offset in range(len(block)):
             index = position + offset
@@ -178,27 +269,96 @@ def replay(
                     threshold=threshold,
                 )
             )
+            for name in decision.events:
+                record(name, **{**decision.details, "position": index})
 
-            if decision.retrain:
-                record("retrain_start", position=index, reason=decision.reason, **decision.details)
-                # Le reentrainement ne voit que l'historique deja observe.
-                training_set = strategy.training_set(stream.X[: index + 1], index)
-                detector = build_detector(model_config, features_config, seed)
-                detector.fit(training_set)
-                cost.n_retrains += 1
-                cost.n_promoted += 1  # B0/B1 : tout reentrainement est mis en service
-                cost.retrain_seconds += detector.fit_seconds
+            if not decision.retrain:
+                continue
+
+            record(
+                "retrain_start",
+                **{**decision.details, "position": index, "reason": decision.reason},
+            )
+
+            # Le reentrainement ne voit que l'historique deja observe.
+            plan = strategy.propose(stream.X[: index + 1], index)
+            challenger = build_detector(model_config, features_config, seed)
+            challenger.fit(plan.train_X)
+            cost.n_retrains += 1
+            cost.retrain_seconds += challenger.fit_seconds
+
+            # Mesures de validation : sans etiquette, sur la fenetre reservee V.
+            validation_started = time.perf_counter()
+            challenger_reserved = (
+                challenger.score(plan.reserved_X)
+                if len(plan.reserved_X)
+                else np.empty(0, dtype=np.float64)
+            )
+            champion_reserved = (
+                detector.score(plan.reserved_X)
+                if len(plan.reserved_X)
+                else np.empty(0, dtype=np.float64)
+            )
+            cost.validation_seconds += time.perf_counter() - validation_started
+
+            stats = ValidationStats(
+                position=index,
+                n_history=index + 1,
+                n_train_windows=len(plan.train_X),
+                n_reserved_windows=len(plan.reserved_X),
+                challenger_alert_rate=_alert_rate(challenger_reserved, challenger.threshold),
+                champion_alert_rate=_alert_rate(champion_reserved, detector.threshold),
+                challenger_threshold=float(challenger.threshold),
+                champion_threshold=float(detector.threshold),
+                challenger_fit_seconds=float(challenger.fit_seconds),
+            )
+            verdict = strategy.validate(stats)
+            # Les details du plan d'entrainement puis ceux de la validation sont
+            # fusionnes dans cet ordre : `stats` est la mesure faite par le
+            # harnais et doit primer sur ce que la strategie a declare.
+            record(
+                "retrain_end",
+                position=index,
+                seconds=round(challenger.fit_seconds, 3),
+                threshold=challenger.threshold,
+                **{**plan.details, **stats.as_details()},
+            )
+
+            if not verdict.promote:
+                cost.n_rejected += 1
                 record(
-                    "retrain_end",
-                    position=index,
-                    seconds=round(detector.fit_seconds, 3),
-                    threshold=detector.threshold,
-                    n_train_windows=detector.n_train_windows,
+                    "rejected",
+                    **{**verdict.details, "position": index, "reason": verdict.reason},
                 )
-                retrained_at = index
-                break
+                # Le champion reste en service : le bloc deja score est toujours
+                # valide, la boucle continue sans rien recalculer.
+                continue
 
-        position = n if retrained_at is None else retrained_at + 1
+            # Scoring fantome du modele remplace, hors cout de la strategie (D16).
+            shadow_started = time.perf_counter()
+            shadow_start = index + 1
+            shadow_stop = min(n, shadow_start + shadow_windows)
+            if shadow_stop > shadow_start:
+                shadow.add(
+                    position=index,
+                    start=shadow_start,
+                    threshold=detector.threshold,
+                    scores=detector.score(stream.X[shadow_start:shadow_stop]),
+                )
+            shadow_seconds += time.perf_counter() - shadow_started
+
+            detector = challenger
+            cost.n_promoted += 1
+            model_changes.append(index + 1)
+            strategy.on_fit(plan.train_X, index)
+            record(
+                "promoted",
+                **{**verdict.details, "position": index, "reason": verdict.reason},
+            )
+            promoted_at = index
+            break
+
+        position = n if promoted_at is None else promoted_at + 1
 
     result = evaluate(
         y_true=stream.y,
@@ -210,8 +370,13 @@ def replay(
         sampling_interval_seconds=stream.sampling_interval_seconds,
         evaluation_config=evaluation_config,
         cost=cost,
+        drift_window=stream.drift_window(),
+        event_log=log,
     )
     record("run_end", f1=result.windows.f1, n_alerts=result.windows.n_alerts)
+
+    # Le temps du scoring fantome est retire : il ne fait pas partie du rejeu.
+    wall_seconds = time.perf_counter() - started - shadow_seconds
 
     return ReplayOutcome(
         run_id=run_id,
@@ -221,9 +386,12 @@ def replay(
         scores=scores,
         alerts=alerts,
         thresholds=thresholds,
+        model_changes=model_changes,
+        shadow=shadow,
         event_log=log,
         started_at=started_at,
-        wall_seconds=time.perf_counter() - started,
+        wall_seconds=wall_seconds,
+        shadow_seconds=shadow_seconds,
     )
 
 
@@ -280,7 +448,9 @@ def save_run(
         for entry in outcome.event_log:
             handle.write(json.dumps(entry) + "\n")
 
-    # Traces pour les figures : scores, alertes, seuils, verite terrain.
+    # Traces pour les figures et pour le calcul hors ligne des promotions
+    # degradantes : scores, alertes, seuils, changements de modele, verite
+    # terrain, et scores fantomes du modele remplace (D16).
     np.savez_compressed(
         directory / "traces.npz",
         scores=outcome.scores,
@@ -288,6 +458,8 @@ def save_run(
         thresholds=outcome.thresholds,
         y_true=stream.y,
         end_index=stream.end_index,
+        model_changes=np.asarray(outcome.model_changes, dtype=np.int64),
+        **outcome.shadow.as_arrays(),
     )
     return directory
 
@@ -309,6 +481,8 @@ def summary_row(
         "seed": outcome.seed,
         "started_at": outcome.started_at,
         "wall_seconds": round(outcome.wall_seconds, 2),
+        # Temps amorti, pas mesure : voir ReplayOutcome.window_ms_amortized.
+        "window_ms_amortized": round(outcome.window_ms_amortized, 4),
         "window_size": features["window_size"],
         "stride": features["stride"],
         "model": model["model"],
@@ -331,6 +505,21 @@ def summary_row(
             }
         )
     row.update(outcome.result.to_row())
+
+    # Promotions degradantes : calculees ici, apres le rejeu, depuis les traces
+    # fantomes (D16). Elles utilisent les etiquettes, ce qui est licite dans la
+    # mesure du resultat mais ne l'aurait pas ete dans une decision de la
+    # strategie : `replay` a deja rendu la main quand ce calcul a lieu.
+    promotions = configs.get("evaluation", {}).get("promotions", {})
+    row.update(
+        evaluate_promotions(
+            y_true=stream.y,
+            alerts=outcome.alerts,
+            model_changes=np.asarray(outcome.model_changes, dtype=np.int64),
+            delta_f1=float(promotions.get("delta_f1", 0.05)),
+            **outcome.shadow.as_arrays(),
+        ).as_row()
+    )
     return row
 
 

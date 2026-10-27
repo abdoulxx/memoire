@@ -13,6 +13,13 @@ dependencies = [
     "matplotlib>=3.9,<3.11",
     "pyarrow>=17.0,<19.0",
     "joblib>=1.4,<2.0",
+    # Detecteurs de derive de la litterature (ADWIN, PageHinkley).
+    # Bornee a < 0.23 volontairement : river >= 0.26 exige numpy >= 2.2.5, or
+    # tous les resultats deja mesures (M0, M0++, M1) l'ont ete sous numpy
+    # 2.1.3. Monter numpy maintenant romprait la reproductibilite des CSV
+    # deja commites pour un gain nul : l'API d'ADWIN et de PageHinkley est
+    # la meme en 0.22 qu'en 0.26 (D24).
+    "river>=0.21,<0.23",
 ]
 
 [project.scripts]

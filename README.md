@@ -21,22 +21,38 @@ uv run mdrift --help
 
 ## Commandes
 
-| Commande | Role |
-|---|---|
-| `uv run mdrift version` | Verifie que l'environnement repond |
-| `uv run mdrift smd-download` | Telecharge les machines SMD retenues (55,5 Mo pour 3 machines) |
-| `uv run mdrift smd-info` | Decrit les donnees chargees : tailles, durees, anomalies |
-| `uv run mdrift baseline` | Performance de reference en regime stable (strategie B0, sans derive) |
-| `uv run mdrift figures` | Figures PNG 300 dpi a partir des traces enregistrees |
+| Commande | Role | Jalon |
+|---|---|---|
+| `uv run mdrift version` | Verifie que l'environnement repond | M0 |
+| `uv run mdrift smd-download` | Telecharge les machines SMD retenues | M0 |
+| `uv run mdrift smd-info` | Decrit les donnees chargees : tailles, durees, anomalies | M0 |
+| `uv run mdrift baseline` | Performance de reference en regime stable (B0, sans derive) | M0 |
+| `uv run mdrift smd-screening` | Quantifie la derive naturelle des 28 machines (partage dev / eval) | M0+ |
+| `uv run mdrift calibration` | Mesure les etapes 3 et 4 de la strategie proposee (D13, D14) | M0+ |
+| `uv run mdrift inject` | Decrit la derive injectee par machine, scenario et graine | M1 |
+| `uv run mdrift calibration-k` | Calibre l'amplitude *k* de la derive injectee (D22) | M1 |
+| `uv run mdrift scenario-figures` | Figures des quatre scenarios de derive | M1 |
+| `uv run mdrift run` | Rejoue un flux pour une strategie : un rejeu, une ligne de resultat | M2 |
+| `uv run mdrift campaign` | Enchaine machines x scenarios x strategies x graines, reprenable | M2 |
+| `uv run mdrift calibrate-drift` | Balaie la grille des parametres de derive sur le perimetre de mise au point | M2 |
+| `uv run mdrift promotions` | Recalcule les promotions degradantes hors ligne depuis les traces | M2 |
+| `uv run mdrift figures` | Figures PNG 300 dpi a partir des traces enregistrees | M0 |
 
-(La table se remplit au fil des jalons : une sous-commande par experience.)
+Les commandes de calibrage (`smd-screening`, `calibration`, `calibration-k`, `calibrate-drift`)
+n'ecrivent **jamais** dans `results/summary.csv` : elles ont leur propre fichier. Une campagne de mise
+au point passe `--summary-path`, pour que la synthese du memoire ne contienne que des executions a
+configuration figee.
 
 ### Donnees
 
 Le SMD (Su et al., KDD 2019, licence MIT) est echantillonne **a la minute**, 38 metriques par
-machine. Le perimetre courant est de 3 machines, une par groupe, declarees dans
-`configs/datasets/smd.yaml`. Les donnees brutes ne sont pas versionnees ; un manifeste
-`data/raw/smd/manifest.json` enregistre l'empreinte SHA-256 de chaque fichier utilise.
+machine. `configs/datasets/smd.yaml` declare le perimetre de developpement courant, 3 machines, une
+par groupe. Deux perimetres disjoints encadrent les experiences : **16 machines de mise au point**
+(`smd_dev.yaml`), sur lesquelles tous les parametres sont regles, et **12 machines d'evaluation**
+(`smd_eval.yaml`), sur lesquelles rien n'est execute avant que les parametres soient figes. Aucun
+reglage ne regarde les etiquettes d'une machine d'evaluation. Les donnees brutes ne sont pas
+versionnees ; un manifeste `data/raw/smd/manifest.json` enregistre l'empreinte SHA-256 de chaque
+fichier utilise.
 
 ## Developpement
 

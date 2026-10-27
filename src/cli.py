@@ -9,6 +9,7 @@ from __future__ import annotations
 import typer
 
 from src.config import PROJECT_ROOT as PROJECT_ROOT_DISPLAY
+from src.config import load_config
 
 app = typer.Typer(
     add_completion=False,
@@ -543,6 +544,351 @@ def figures(
         )
         typer.echo(f"  -> {scores.relative_to(PROJECT_ROOT_DISPLAY)}")
         typer.echo(f"  -> {taux.relative_to(PROJECT_ROOT_DISPLAY)}")
+
+
+_RUN_HEADER = (
+    f"{'machine':<14}{'scenario':<16}{'strategie':<11}{'gr.':>5}"
+    f"{'F1':>7}{'F1 av.':>8}{'F1 ap.':>8}{'recup.':>9}"
+    f"{'reent.':>8}{'prom.':>7}{'rej.':>6}{'conf.':>7}{'delai':>8}{'duree':>8}"
+)
+
+
+def _show_run(row: dict) -> None:
+    """Une ligne par rejeu. Les None s'affichent `-` : ils ont un sens (§7)."""
+
+    def num(key: str, fmt: str = ".3f") -> str:
+        value = row.get(key)
+        return "-" if value is None or value != value else format(value, fmt)
+
+    typer.echo(
+        f"{row['machine']:<14}{row['scenario']:<16}{row['strategy']:<11}{row['seed']:>5}"
+        f"{num('f1'):>7}{num('f1_before'):>8}{num('f1_after'):>8}"
+        f"{num('recovery_minutes', '.0f'):>9}"
+        f"{row['cost_n_retrains']:>8}{row['cost_n_promoted']:>7}{row['cost_n_rejected']:>6}"
+        f"{row['drift_n_confirmations']:>7}{num('drift_detection_delay_minutes', '.0f'):>8}"
+        f"{row['total_seconds']:>8.1f}"
+    )
+
+
+def _show_campaign_summary(table) -> None:
+    """Resume d'une campagne : une ligne par strategie, moyenne sur les machines.
+
+    La moyenne est prise **par machine d'abord** (OBS06) : les machines d'un meme
+    groupe SMD sont correlees, et moyenner directement sur les rejeux donnerait
+    plus de poids aux groupes qui comptent le plus de machines.
+    """
+    if table.empty:
+        typer.echo("Aucun rejeu execute (tout etait deja dans summary.csv).")
+        return
+    par_machine = table.groupby(["strategy", "machine"], as_index=False).mean(numeric_only=True)
+    resume = par_machine.groupby("strategy", as_index=False).agg(
+        machines=("machine", "nunique"),
+        f1=("f1", "mean"),
+        f1_apres=("f1_after", "mean"),
+        reentrainements=("cost_n_retrains", "mean"),
+        promus=("cost_n_promoted", "mean"),
+        rejetes=("cost_n_rejected", "mean"),
+        secondes_reentrainement=("cost_retrain_seconds", "mean"),
+        confirmations=("drift_n_confirmations", "mean"),
+        promotions_degradantes=("n_promotions_degradantes", "mean"),
+    )
+    typer.echo("\nMoyenne par strategie (moyenne par machine d'abord, OBS06) :")
+    typer.echo(resume.round(3).to_string(index=False))
+
+
+@app.command("run")
+def run_command(
+    machine: str = typer.Option(..., help="Nom d'une machine SMD."),
+    strategy: str = typer.Option(
+        "proposed", help="Fichier de configs/strategies/ : static, periodic, proposed, ablation."
+    ),
+    scenario: str = typer.Option("none", help="Scenario de derive, ou 'none'."),
+    seed: int = typer.Option(42, help="Graine de l'execution."),
+    dataset_config: str = typer.Option(
+        "datasets/smd_dev.yaml", help="Perimetre. NE PAS pointer smd_eval.yaml avant le gel."
+    ),
+    features_config: str = typer.Option("features.yaml", help="Configuration des features."),
+    model_config: str = typer.Option("model.yaml", help="Configuration du modele."),
+    evaluation_config: str = typer.Option("evaluation.yaml", help="Configuration des metriques."),
+    drift_config: str = typer.Option("drift.yaml", help="Configuration du moniteur de derive."),
+) -> None:
+    """Rejoue un flux pour une strategie : un rejeu, une ligne de resultat.
+
+    C'est la commande de travail : un triplet (machine, scenario, graine) et une
+    strategie. Elle recalcule toujours et remplace la ligne correspondante de
+    `results/summary.csv` ; pour enchainer des centaines de rejeux reprenables,
+    utiliser `mdrift campaign`.
+    """
+    from src.evaluation.campaign import run_campaign
+
+    typer.echo(_RUN_HEADER)
+    run_campaign(
+        dataset_config=dataset_config,
+        features_config=features_config,
+        model_config=model_config,
+        evaluation_config=evaluation_config,
+        drift_config=drift_config,
+        strategies=[strategy],
+        scenarios=[scenario],
+        seeds=[seed],
+        machines=[machine],
+        resume=False,
+        on_row=_show_run,
+    )
+    typer.echo("\n-> results/summary.csv et results/runs/.")
+
+
+@app.command("campaign")
+def campaign_command(
+    strategies: str = typer.Option(
+        "static,periodic,proposed",
+        help="Fichiers de configs/strategies/, separes par des virgules.",
+    ),
+    scenarios: str = typer.Option("none", help="Scenarios, separes par des virgules."),
+    seeds: str = typer.Option("42", help="Graines, separees par des virgules."),
+    machine: str = typer.Option("all", help="Nom d'une machine, ou 'all' pour tout le perimetre."),
+    dataset_config: str = typer.Option(
+        "datasets/smd_dev.yaml", help="Perimetre. NE PAS pointer smd_eval.yaml avant le gel."
+    ),
+    features_config: str = typer.Option("features.yaml", help="Configuration des features."),
+    model_config: str = typer.Option("model.yaml", help="Configuration du modele."),
+    evaluation_config: str = typer.Option("evaluation.yaml", help="Configuration des metriques."),
+    drift_config: str = typer.Option("drift.yaml", help="Configuration du moniteur de derive."),
+    force: bool = typer.Option(
+        False, "--force", help="Recalcule meme les rejeux deja dans summary.csv."
+    ),
+    summary_path: str = typer.Option(
+        "",
+        help="Fichier de synthese. Vide = results/summary.csv. A renseigner pour une "
+        "campagne de mise au point, qui n'a pas sa place dans la synthese du memoire.",
+    ),
+) -> None:
+    """Enchaine machines x scenarios x strategies x graines, de facon reprenable.
+
+    Chaque rejeu est ecrit des qu'il est fini : interrompre la campagne ne perd
+    rien, et la relancer reprend la ou elle s'etait arretee (les `run_id` deja
+    presents dans `results/summary.csv` sont sautes). Toutes les strategies d'un
+    meme triplet (machine, scenario, graine) rejouent le **meme** flux.
+    """
+    from pathlib import Path
+
+    from src.evaluation.campaign import completed_run_ids, plan, run_campaign
+    from src.evaluation.replay import SUMMARY_PATH
+
+    sortie = SUMMARY_PATH if not summary_path else Path(summary_path)
+    noms = (
+        load_config(dataset_config)["machines"]
+        if machine == "all"
+        else [m.strip() for m in machine.split(",") if m.strip()]
+    )
+    strategy_names = [s.strip() for s in strategies.split(",") if s.strip()]
+    scenario_names = [s.strip() for s in scenarios.split(",") if s.strip()]
+    seed_values = [int(s) for s in seeds.split(",") if s.strip()]
+
+    jobs = plan(noms, scenario_names, strategy_names, seed_values)
+    deja = set() if force else completed_run_ids(sortie)
+    restants = [job for job in jobs if job.run_id not in deja]
+    typer.echo(
+        f"{len(jobs)} rejeux au programme ({len(noms)} machines x {len(scenario_names)} "
+        f"scenarios x {len(strategy_names)} strategies x {len(seed_values)} graines), "
+        f"{len(jobs) - len(restants)} deja faits, {len(restants)} a executer."
+    )
+    if not restants:
+        raise typer.Exit(code=0)
+    typer.echo("")
+    typer.echo(_RUN_HEADER)
+
+    table = run_campaign(
+        dataset_config=dataset_config,
+        features_config=features_config,
+        model_config=model_config,
+        evaluation_config=evaluation_config,
+        drift_config=drift_config,
+        strategies=strategy_names,
+        scenarios=scenario_names,
+        seeds=seed_values,
+        machines=noms,
+        resume=not force,
+        on_row=_show_run,
+        summary_path=sortie,
+    )
+    _show_campaign_summary(table)
+    typer.echo(f"\n-> {sortie} et results/runs/.")
+
+
+@app.command("calibrate-drift")
+def calibrate_drift(
+    dataset_config: str = typer.Option(
+        "datasets/smd_dev.yaml",
+        help="Perimetre. NE PAS pointer smd_eval.yaml : le calibrage lit les etiquettes (D17).",
+    ),
+    features_config: str = typer.Option("features.yaml"),
+    drift_config: str = typer.Option("drift.yaml"),
+    scenarios: str = typer.Option(
+        "none,s1_soudaine,s2_incrementale,s3_graduelle,s4_recurrente",
+        help="Scenarios balayes. `none` mesure la specificite, les autres la sensibilite.",
+    ),
+    seeds: str = typer.Option("42", help="Graines. Sans effet sur `none`."),
+    machine: str = typer.Option("all", help="Une machine, plusieurs separees par une virgule."),
+    quantiles: str = typer.Option("0.99,0.999,1.0", help="Quantiles du modele nul balayes."),
+    margins: str = typer.Option("1.0,1.25,1.5,2.0", help="Marges sur le seuil par feature."),
+    shares: str = typer.Option("0.10,0.15,0.20,0.30,0.40", help="Parts declenchantes balayees."),
+    confirmations: str = typer.Option("240,360,480,600,720,960", help="Valeurs de K, en fenetres."),
+    recent_windows: str = typer.Option(
+        "",
+        help="Valeurs de R balayees. Vide = celle de la config. Chaque valeur coute un "
+        "parcours complet du perimetre : R change la trace, pas seulement une comparaison.",
+    ),
+    stable: str = typer.Option(
+        "machine-1-3,machine-2-7,machine-3-10",
+        help="Machines stables du perimetre : la specificite n'est comptee que sur elles (OBS03).",
+    ),
+    path: str = typer.Option(
+        "",
+        help="Fichier de sortie. Vide = results/calibration_m2_dev.csv. A renseigner pour "
+        "un balayage cible, sinon il ecrase la grille large.",
+    ),
+) -> None:
+    """Balaie la grille des parametres de derive sur le perimetre de mise au point.
+
+    Produit `results/calibration_m2_dev.csv` (une ligne par machine x scenario x
+    graine x point de grille) et affiche le tableau de decision : fausses
+    confirmations sur les machines stables sans injection, contre taux de
+    detection et delai sur les scenarios injectes.
+
+    Le flux de chaque (machine, scenario, graine) est parcouru **une fois** ; les
+    points de grille sont ensuite evalues sur les statistiques conservees.
+    """
+    from pathlib import Path
+
+    from src.evaluation.drift_calibration import DRIFT_CALIBRATION_PATH, summarise
+    from src.evaluation.drift_calibration import calibrate_drift as run_calibration
+
+    noms = None if machine == "all" else [nom.strip() for nom in machine.split(",")]
+    sortie = DRIFT_CALIBRATION_PATH if not path else Path(path)
+
+    def floats(texte: str) -> tuple[float, ...]:
+        return tuple(float(valeur) for valeur in texte.split(","))
+
+    def ints(texte: str) -> tuple[int, ...]:
+        return tuple(int(valeur) for valeur in texte.split(","))
+
+    table, run = run_calibration(
+        dataset_config=dataset_config,
+        features_config=features_config,
+        drift_config=drift_config,
+        scenarios=[nom.strip() for nom in scenarios.split(",")],
+        seeds=ints(seeds),
+        machines=noms,
+        quantiles=floats(quantiles),
+        margins=floats(margins),
+        shares=floats(shares),
+        confirmations=ints(confirmations),
+        recent_windows=None if not recent_windows else ints(recent_windows),
+        path=sortie,
+        on_trace=lambda info: typer.echo(
+            f"  {info['machine']:<14} {info['scenario']:<16} seed {info['seed']:<3} "
+            f"R {info['recent_windows']:<5} {info['n_windows']} fenetres, "
+            f"{info['n_features_usable']} features, {info['n_blocks']} blocs nuls, "
+            f"t_d {info['drift_window']}, {info['trace_seconds']}s"
+        ),
+    )
+    typer.echo(
+        f"\n{run.n_traces} parcours, {run.n_rows} points de grille, {run.seconds / 60:.1f} min."
+    )
+
+    noms_stables = [nom.strip() for nom in stable.split(",")]
+    resume = summarise(table, noms_stables)
+    typer.echo("\nTableau de decision (trie : zero fausse confirmation d'abord).")
+    typer.echo(f"Machines stables du perimetre : {', '.join(noms_stables)}.")
+    colonnes = [
+        "recent_windows",
+        "quantile",
+        "margin",
+        "drifting_share",
+        "confirmation_windows",
+        "faux_signaux_stables",
+        "n_traces_stables",
+        "fausses_confirmations_stables",
+        "confirmations_derive_naturelle",
+        "detections",
+        "n_injections",
+        "delai_median",
+    ]
+    colonnes = [nom for nom in colonnes if nom in resume.columns]
+    typer.echo(resume[colonnes].head(25).to_string(index=False))
+    typer.echo(f"\n-> {sortie}")
+
+
+@app.command("promotions")
+def promotions_command(
+    runs_dir: str = typer.Option("results/runs", help="Racine des traces de rejeu."),
+    delta: str = typer.Option(
+        "",
+        help="Valeurs de delta balayees, separees par des virgules. Vide = celle de "
+        "configs/evaluation.yaml. Plusieurs valeurs montrent la sensibilite du comptage.",
+    ),
+    evaluation_config: str = typer.Option("evaluation.yaml"),
+    scenarios: str = typer.Option("", help="Filtre. Vide = tous les scenarios presents."),
+    path: str = typer.Option("", help="Fichier de sortie. Vide = results/promotions.csv."),
+) -> None:
+    """Recalcule les promotions degradantes hors ligne, depuis `traces.npz`.
+
+    Le calcul utilise les etiquettes : il ne pouvait donc pas vivre dans la
+    strategie, et son cout est exclu du cout de reentrainement (D16). Comme tout
+    repart des traces, changer delta ne coute pas un rejeu — ce qui est le seul
+    moyen honnete de montrer qu'une conclusion ne tient pas au reglage de ce
+    seuil. Une ligne par promotion, pour que la **distribution** des ecarts
+    demandee au §7 soit dans le fichier et pas seulement son comptage.
+    """
+    from pathlib import Path
+
+    import pandas as pd
+
+    from src.evaluation.promotions import collect_promotions
+    from src.evaluation.replay import RESULTS_DIR
+
+    seuils = (
+        [float(load_config(evaluation_config).get("promotions", {}).get("delta_f1", 0.05))]
+        if not delta
+        else [float(valeur) for valeur in delta.split(",") if valeur.strip()]
+    )
+    sortie = RESULTS_DIR / "promotions.csv" if not path else Path(path)
+    filtres = [nom.strip() for nom in scenarios.split(",") if nom.strip()]
+
+    lignes = []
+    for seuil in seuils:
+        lignes.extend(collect_promotions(runs_dir, delta_f1=seuil))
+    table = pd.DataFrame(lignes)
+    if table.empty:
+        typer.echo("Aucune promotion trouvee. Les rejeux ont-ils ete executes ?")
+        raise typer.Exit(code=1)
+    if filtres:
+        table = table[table["scenario"].isin(filtres)]
+    sortie.parent.mkdir(parents=True, exist_ok=True)
+    table.to_csv(sortie, index=False)
+
+    reference = table[table.delta_f1_seuil == seuils[0]]
+    typer.echo(
+        f"{len(reference)} promotions sur {reference.run_id.nunique()} rejeux, "
+        f"{reference.machine.nunique()} machines."
+    )
+    typer.echo("\nEcarts F1(promu) - F1(remplace) sur les N fenetres suivantes :")
+    typer.echo(
+        reference.groupby("strategy")["delta_f1"]
+        .describe(percentiles=[0.05, 0.5, 0.95])
+        .round(4)
+        .to_string()
+    )
+    typer.echo("\nPromotions degradantes, par strategie et par delta :")
+    compte = (
+        table.groupby(["delta_f1_seuil", "strategy"])
+        .agg(promotions=("degrading", "size"), degradantes=("degrading", "sum"))
+        .reset_index()
+    )
+    compte["part"] = (compte.degradantes / compte.promotions).round(4)
+    typer.echo(compte.to_string(index=False))
+    typer.echo(f"\n-> {sortie}")
 
 
 if __name__ == "__main__":

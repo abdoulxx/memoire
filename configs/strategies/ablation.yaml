@@ -1,0 +1,70 @@
+# A1 — ablation : P SANS l'etape de validation.
+#
+# Tout est identique a `proposed.yaml`, a une ligne pres : `validation.enabled`
+# vaut false. C'est volontaire et c'est la seule facon de mesurer ce que la
+# validation apporte. Si A1 et P donnaient des resultats identiques, la
+# conclusion serait que l'etape 4 ne sert a rien — et il faudrait l'ecrire.
+#
+# Aucun code n'est specifique a A1 : c'est la meme classe `ProposedStrategy`,
+# avec `validation_enabled = False`. Une seconde implementation serait une
+# source d'ecart parasite entre les deux bras de l'ablation.
+#
+# ETAT : FIGE le 27/10/2026 (D30), aux memes valeurs que `proposed.yaml`. Toute
+# divergence de parametre entre les deux fichiers, hors `validation.enabled`,
+# invaliderait le test de H3 : l'ecart P - A1 ne mesurerait plus la validation.
+strategy: proposed
+name: ablation
+
+drift_overrides: {}
+
+train_minutes: 10080
+
+# Plancher sur la taille du bloc d'entrainement du challenger, en minutes.
+# Ce n'est pas un critere de validation mais une contrainte **structurelle**,
+# appliquee identiquement a P et a A1 pour que l'ablation n'isole que la
+# validation. Deux raisons, mesurees et non supposees :
+#
+#  - le modele nul du moniteur glisse un bloc de R = 500 fenetres sur
+#    l'entrainement pour calibrer le seuil de chaque feature. En dessous de 500
+#    fenetres il n'y a pas un seul bloc, et le seuil n'existe pas : le
+#    challenger promu serait un modele que la strategie ne saurait plus
+#    surveiller. Ce plancher dur est applique par le code quoi que dise ce
+#    fichier ;
+#  - pour qu'un quantile a 0,999 ait un sens, il faut nettement plus d'un bloc.
+#    Avec un pas de glissement de R / 10 = 50 fenetres, 5450 fenetres donnent
+#    100 blocs.
+#
+# FIGE a 5450 (D30). Verifie contre le calibrage de D29 et non suppose : la
+# confirmation la plus precoce observee sur tout le perimetre de mise au point
+# tombe a la fenetre 5 483 (machine-1-6), et toutes les autres sont posterieures
+# a la fenetre 10 000. Le plancher ne differe donc au plus qu'une confirmation
+# sur 80, et c'est une confirmation prematuree — exactement le cas qu'il doit
+# retarder. Aucune vraie derive n'est concernee : sur S1 a S4, t_d est tire dans
+# [40 %, 60 %] du flux, soit au-dela de la fenetre 9 400 sur le SMD.
+#
+# Une confirmation obtenue avant ce plancher n'est pas perdue : elle est mise en
+# attente et declenche des que l'historique suffit.
+min_train_minutes: 5450
+
+# V reste reservee alors qu'A1 ne valide pas : sans cela, A1 entrainerait son
+# challenger sur W et P sur W - V, et l'ecart mesure melangerait l'effet de la
+# validation a celui de la quantite de donnees d'entrainement. La fenetre
+# reservee est donc retiree de la meme facon dans les deux bras ; seul l'usage
+# qui en est fait change.
+reserved_minutes: 1440
+
+# C : refroidissement apres une promotion, en minutes. FIGE a 1440 (24 h), et
+# inerte pour la raison expliquee dans `proposed.yaml` : R + K = 1 460 fenetres
+# sont de toute facon necessaires apres une promotion avant qu'une nouvelle
+# confirmation soit possible.
+cooldown_minutes: 1440
+
+validation:
+  enabled: false
+  min_history: 300
+  alert_rate_min: 0.001
+  alert_rate_max: 0.30
+
+exclusion:
+  method: none
+  percentile: 99.0

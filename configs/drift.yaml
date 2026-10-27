@@ -1,0 +1,144 @@
+# Surveillance de derive : etapes 1 et 2 de la strategie proposee (cadrage, §6).
+#
+# AUCUNE valeur de ce fichier n'est en dur dans le code. Les valeurs retenues
+# finissent dans un tableau du chapitre 4, et elles sont calibrees sur les 16
+# machines de mise au point (configs/datasets/smd_dev.yaml) puis FIGEES avant la
+# premiere execution sur les 12 machines d'evaluation (D17).
+#
+# ETAT : FIGE le 26/10/2026 (D29). Les cinq parametres du moniteur ont ete
+# calibres par balayage sur les 16 machines de mise au point, 5 scenarios et
+# 1 graine, soit 320 traces et 536 points de grille
+# (`results/calibration_m2_dev.csv`, `mdrift calibrate-drift`). Le point retenu
+# est le plus sensible parmi ceux qui ne produisent AUCUN faux signal sur les
+# machines stables : 51 detections sur 64 injections (79,7 %), 0 faux signal sur
+# les 15 traces stables, delai median de confirmation de 2 431 fenetres.
+# Plus aucune de ces valeurs ne doit bouger : la campagne d'evaluation (M3)
+# porte sur 12 machines dont les etiquettes n'ont jamais ete regardees (D17).
+
+# Statistique par feature : `ks` ou `psi`. Les deux sont implementees et se
+# calculent sur la meme discretisation de la reference, donc au meme cout : le
+# choix sera tranche par la mesure. `ks` par defaut parce que c'est la seule des
+# deux dont le pouvoir discriminant est deja etabli sur ce jeu de donnees (D18 :
+# 0,0 % de features au-dela de 0,5 sur machine-1-2 stable, 26,3 % sur
+# machine-3-1 derivante).
+statistic: ks
+
+# Nombre d'intervalles de quantiles de la reference. Il fixe la precision de la
+# statistique discretisee : erreur maximale mesuree par rapport au KS exact de
+# 0,147 a 10 intervalles, 0,072 a 20, 0,027 a 50 et 0,013 a 100 (machine-1-1,
+# 120 features utilisables). 50 est le compromis retenu : l'erreur est un ordre
+# de grandeur sous le seuil par feature, pour un cout par fenetre negligeable.
+n_bins: 50
+
+# Taille R de la fenetre recente comparee a la reference, en fenetres (donc en
+# minutes, le pas etant d'une minute). 500 fenetres valent 8,3 h : assez pour
+# qu'une anomalie de quelques minutes ne deplace pas la distribution, ce qui est
+# exactement ce qu'on veut puisqu'une anomalie n'est pas une derive.
+# Tant que R fenetres n'ont pas ete vues depuis le dernier recalage, le signal
+# est declare non pret et ne peut pas confirmer.
+#
+# MESURE (D29). R est le seul parametre de la grille qui ne soit pas
+# factorisable : il change la distribution nulle et l'histogramme glissant,
+# donc la trace elle-meme. Il a donc fallu un balayage dedie, un parcours
+# complet du perimetre par valeur. A specificite egale (zero faux signal), le
+# meilleur taux de detection atteignable vaut 30/64 a R = 120, 33/64 a R = 250,
+# 51/64 a R = 500 et 47/64 a R = 1000. L'optimum est net et interieur : trop
+# court, la fenetre recente est trop bruitee pour qu'une part de features se
+# maintienne K fenetres d'affilee ; trop long, elle melange longtemps l'avant
+# et l'apres derive et dilue le signal.
+recent_windows: 500
+
+# Seuil par feature. MESURE : un seuil absolu ne marche pas. Le moniteur
+# compare la reference d'entrainement a une fenetre recente de R fenetres, et
+# non deux moities entieres comme D18 : 500 fenetres chevauchantes couvrent
+# 8,3 h, sont fortement autocorrelees et ne couvrent jamais l'etendue d'un
+# entrainement de 20 jours. Avec un seuil absolu de 0,5, la part mediane de
+# features « en derive » sur le scenario `none` va de 0,1500 a 0,4914 sur les
+# machines STABLES de mise au point et de 0,1667 a 0,4621 sur les INSTABLES :
+# les deux populations ne se separent pas du tout.
+#
+# Le seuil de chaque feature est donc calibre sur l'entrainement lui-meme : une
+# fenetre de meme taille R glisse sur la moitie `train` et l'on retient un
+# quantile eleve de la statistique atteinte sans aucune derive. Une feature est
+# en derive quand elle depasse ce qu'elle atteignait de pire a l'entrainement.
+# Cela neutralise l'autocorrelation, la taille d'echantillon et l'etendue propre
+# a chaque feature sans avoir a les modeliser. Cout paye une fois par
+# entrainement, jamais par fenetre. Voir src/drift/null_model.py.
+feature_threshold:
+  method: empirical_null   # ou `absolute`, conserve pour l'ablation
+  # Quantile de la distribution nulle retenu comme seuil. FIGE a 0,999 (D29).
+  # 0,999 et 1,0 (le maximum atteint sans derive) donnent le meme nombre de
+  # detections, 51/64, mais 0,999 confirme plus tot : delai median de 2 431
+  # fenetres contre 2 628. 0,99 est en dessous : il laisse passer des faux
+  # signaux sur les machines stables des que la part declenchante descend.
+  quantile: 0.999
+  # Marge multiplicative appliquee au quantile. > 1 rend le moniteur plus
+  # conservateur. FIGE a 1,0 (D29) : la distribution nulle porte deja toute la
+  # marge utile. Les marges de 1,1 a 2,0 ont ete balayees et ne font que
+  # degrader la sensibilite a specificite inchangee (48/64 au mieux a 1,1).
+  margin: 1.0
+  # Pas de glissement des blocs sur l'entrainement, en fenetres.
+  # `null` = recent_windows / 10.
+  step: null
+  # Seuil fixe, utilise seulement si `method: absolute`.
+  absolute: 0.5
+
+# Part declenchante : le signal est actif si au moins cette part des features
+# UTILISABLES est en derive. Les features constantes sur la reference sont
+# exclues du denominateur (D18) : sur machine-1-1, 120 features utilisables sur
+# 152, les 32 autres etant les 8 metriques constantes x 4 agregats.
+# FIGE a 0,20 (D29). Les parts de 0,10 a 0,40 ont ete balayees : 0,20 est la
+# plus sensible a zero faux signal. 0,15 detecte une injection de plus (52/64)
+# mais au prix d'un faux signal sur une machine stable, ce qui est exactement
+# le defaut que l'etape de confirmation doit supprimer : +1 detection sur 64 ne
+# justifie pas de renoncer a la specificite qui fait l'interet de la strategie.
+drifting_share: 0.20
+
+# K : nombre de fenetres CONSECUTIVES de signal exigees pour confirmer.
+# C'est le parametre le plus important du memoire. FIGE a 960 (16 h) par D29.
+#
+# RESULTAT CONTRE-INTUITIF, et c'est le plus interessant du calibrage : le taux
+# de detection MONTE avec K jusqu'a 960, puis descend. A quantile 0,999, marge
+# 1,0 et part 0,20 : K = 240 -> 36/64 detections, 360 -> 39, 480 -> 41,
+# 600 -> 45, 720 -> 44, 960 -> 51, 1200 -> 49, 1440 -> 47, 1920 -> 45,
+# 2400 -> 45.
+#
+# L'explication est structurelle, pas statistique. La reference du moniteur est
+# figee tant qu'aucun reentrainement n'a eu lieu et la confirmation est latchee
+# : il y a donc au plus UNE confirmation par flux. Un K trop court confirme
+# avant t_d, sur une fluctuation, et verrouille la detection de la vraie derive
+# qui arrive ensuite — a K = 240, 28 des 64 injections sont perdues ainsi,
+# contre 4 seulement a K = 960. Au-dela de 960, c'est l'effet attendu qui
+# reprend : la persistance exigee devient plus longue que certains episodes et
+# le delai median double.
+#
+# A rapprocher de D19 : K = 30 (30 min) confirmait une derive sur 13 des 15
+# machines stables. 960 fenetres, soit 16 h de signal ininterrompu, ramenent ce
+# compte a zero sur le perimetre de mise au point.
+confirmation_windows: 960
+
+# Une feature dont l'etendue sur la reference ne depasse pas cette tolerance est
+# traitee comme constante et exclue. 0,0 = exclusion des seules constantes
+# exactes.
+constant_tolerance: 0.0
+
+# Plancher de probabilite du PSI, pour qu'un intervalle vide ne donne pas un
+# terme infini. Sans effet quand `statistic: ks`.
+psi_epsilon: 1.0e-6
+
+alert_rate:
+  # Signal SECONDAIRE : ADWIN sur l'indicatrice d'alerte du modele en service.
+  # Jamais seul (D19 : sans specificite), et combine sous forme d'etat latche et
+  # non de signal instantane (voir src/drift/adwin.py).
+  enabled: true
+  # Niveau de confiance d'ADWIN : plus petit = plus conservateur.
+  delta: 0.002
+  grace_period: 10
+  clock: 32
+
+# Regle de combinaison des deux signaux :
+#   features             - part de features seule (defaut)
+#   features_and_alerts  - les deux, plus specifique, delai plus long
+#   features_or_alerts   - l'un des deux, plus sensible
+# Les trois sont implementees pour que le choix soit mesure et non postule.
+combination: features

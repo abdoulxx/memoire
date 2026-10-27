@@ -19,7 +19,13 @@ from src.evaluation.replay import (
     replay,
     summary_row,
 )
-from src.strategies.base import Decision, WindowContext
+from src.strategies.base import (
+    Decision,
+    TrainingPlan,
+    ValidationStats,
+    Verdict,
+    WindowContext,
+)
 from src.strategies.static import StaticStrategy
 
 FEATURES_CONFIG = load_config("features.yaml")
@@ -110,35 +116,132 @@ def test_journal_et_traces_complets() -> None:
     assert all(entry["run_id"] == outcome.run_id for entry in outcome.event_log)
 
 
+class ReentraineUneFois:
+    """Strategie factice : reentraine une seule fois, a la fenetre demandee.
+
+    Elle sert a verifier le contrat du harnais sans dependre du moniteur de
+    derive : ce qui est teste ici est le harnais, pas la strategie P.
+    """
+
+    name = "test_retrain"
+
+    def __init__(self, at: int = 100, promote: bool = True, reserved: int = 0) -> None:
+        self.at = at
+        self.promote = promote
+        self.reserved = reserved
+        self.fait = False
+        self.historiques: list[int] = []
+        self.stats: list[ValidationStats] = []
+        self.fits: list[int] = []
+
+    def on_window(self, context: WindowContext) -> Decision:
+        if not self.fait and context.position == self.at:
+            self.fait = True
+            return Decision(retrain=True, reason="test", events=("drift_confirmed",))
+        return Decision(retrain=False)
+
+    def propose(self, history: np.ndarray, position: int) -> TrainingPlan:
+        self.historiques.append(len(history))
+        if self.reserved:
+            return TrainingPlan(
+                train_X=history[: -self.reserved], reserved_X=history[-self.reserved :]
+            )
+        return TrainingPlan(train_X=history, reserved_X=history[:0])
+
+    def validate(self, stats: ValidationStats) -> Verdict:
+        self.stats.append(stats)
+        return Verdict(promote=self.promote, reason="test")
+
+    def on_fit(self, training_X: np.ndarray, position: int) -> None:
+        self.fits.append(position)
+
+
 def test_le_reentrainement_ne_voit_que_le_passe() -> None:
-    """Une strategie factice qui reentraine une fois ne recoit que l'historique observe."""
-    vues: list[int] = []
+    """La strategie ne recoit que l'historique observe, jamais les fenetres futures."""
+    strategie = ReentraineUneFois(at=100)
+    outcome = _replay(_stream(), strategie, seed=42)
 
-    class ReentraineUneFois:
-        name = "test_retrain"
-
-        def __init__(self) -> None:
-            self.fait = False
-
-        def on_window(self, context: WindowContext) -> Decision:
-            if not self.fait and context.position == 100:
-                self.fait = True
-                return Decision(retrain=True, reason="test")
-            return Decision(retrain=False)
-
-        def training_set(self, history: np.ndarray, position: int) -> np.ndarray:
-            vues.append(len(history))
-            return history
-
-    stream = _stream()
-    outcome = _replay(stream, ReentraineUneFois(), seed=42)
-
-    assert vues == [101]  # fenetres 0 a 100 incluses, rien au-dela
+    assert strategie.historiques == [101]  # fenetres 0 a 100 incluses, rien au-dela
     assert outcome.result.cost.n_retrains == 1
+    assert outcome.result.cost.n_promoted == 1
     assert outcome.result.cost.retrain_seconds > 0
     # Le seuil change au reentrainement, et seulement a partir de la.
     assert outcome.thresholds[100] == outcome.thresholds[0]
     assert outcome.thresholds[101] != outcome.thresholds[0]
+    # `on_fit` est appele pour l'entrainement initial puis pour la promotion.
+    assert strategie.fits == [0, 100]
+
+
+def test_un_rejet_laisse_le_champion_en_service() -> None:
+    """Un challenger rejete est jete : le cout est compte, le modele ne change pas."""
+    strategie = ReentraineUneFois(at=100, promote=False, reserved=40)
+    outcome = _replay(_stream(), strategie, seed=42)
+
+    assert outcome.result.cost.n_retrains == 1
+    assert outcome.result.cost.n_rejected == 1
+    assert outcome.result.cost.n_promoted == 0
+    assert np.all(outcome.thresholds == outcome.thresholds[0])
+    # Seul le modele initial a pris du service : aucun changement apres.
+    assert outcome.model_changes == [0]
+    assert strategie.fits == [0]  # pas de recalage : le champion n'a pas change
+
+    evenements = [entry["event"] for entry in outcome.event_log]
+    assert "rejected" in evenements
+    assert "promoted" not in evenements
+
+
+def test_la_strategie_ne_voit_aucune_etiquette() -> None:
+    """Invariant du §6, verifie sur les objets reellement transmis.
+
+    Aucune etiquette ne doit traverser la frontiere harnais / strategie. Le test
+    compare les champs de `WindowContext` et de `ValidationStats` au contenu de
+    `stream.y` : si une etiquette etait passee, elle serait dans l'un des deux.
+    """
+    recus: list[WindowContext] = []
+
+    class Espionne(ReentraineUneFois):
+        def on_window(self, context: WindowContext) -> Decision:
+            recus.append(context)
+            return super().on_window(context)
+
+    strategie = Espionne(at=100, reserved=40)
+    stream = _stream()
+    _replay(stream, strategie, seed=42)
+
+    champs_contexte = set(vars(recus[0]))
+    assert champs_contexte == {"position", "end_index", "features", "score", "alert", "threshold"}
+    champs_stats = set(vars(strategie.stats[0]))
+    assert not any("label" in nom or nom in {"y", "y_true"} for nom in champs_stats)
+
+    # Les features transmises sont bien celles du flux, pas les etiquettes.
+    for contexte in recus[:50]:
+        np.testing.assert_allclose(contexte.features, stream.X[contexte.position])
+
+
+def test_les_evenements_declares_sont_journalises() -> None:
+    """La strategie declare, le harnais ecrit : le journal suit le vocabulaire du §9."""
+    outcome = _replay(_stream(), ReentraineUneFois(at=100), seed=42)
+    evenements = [entry["event"] for entry in outcome.event_log]
+    assert "drift_confirmed" in evenements
+    assert evenements.index("drift_confirmed") < evenements.index("retrain_start")
+    confirme = next(e for e in outcome.event_log if e["event"] == "drift_confirmed")
+    assert confirme["details"]["position"] == 100
+
+
+def test_scoring_fantome_enregistre_le_modele_remplace() -> None:
+    """D16 : apres une promotion, l'ancien modele est encore score sur N fenetres."""
+    outcome = _replay(_stream(), ReentraineUneFois(at=100), seed=42)
+    traces = outcome.shadow.as_arrays()
+
+    assert list(traces["shadow_positions"]) == [100]
+    assert list(traces["shadow_starts"]) == [101]
+    # Le flux fait 400 fenetres : il en reste 299 apres la promotion, moins que
+    # les 500 de la configuration, donc le bloc est tronque a ce qui existe.
+    assert int(traces["shadow_lengths"][0]) == 299
+    assert len(traces["shadow_scores"]) == 299
+    # Le cout du scoring fantome est exclu du temps de rejeu.
+    assert outcome.shadow_seconds > 0
+    assert outcome.result.cost.retrain_seconds > 0
 
 
 def test_run_id_stable() -> None:
@@ -151,7 +254,11 @@ def test_summary_ne_duplique_pas_un_rejeu(tmp_path) -> None:
     import pandas as pd
 
     stream = _stream()
-    configs = {"features": FEATURES_CONFIG, "model": MODEL_CONFIG}
+    configs = {
+        "features": FEATURES_CONFIG,
+        "model": MODEL_CONFIG,
+        "evaluation": EVALUATION_CONFIG,
+    }
     path = tmp_path / "summary.csv"
 
     for _ in range(2):
@@ -167,5 +274,6 @@ def test_summary_ne_duplique_pas_un_rejeu(tmp_path) -> None:
 
 
 def test_b0_refuse_de_reentrainer() -> None:
+    """B0 ne doit meme pas pouvoir repondre a la question : l'erreur est explicite."""
     with pytest.raises(RuntimeError, match="jamais"):
-        StaticStrategy().training_set(np.zeros((5, 2)), 4)
+        StaticStrategy().propose(np.zeros((5, 2)), 4)

@@ -1,0 +1,6 @@
+# B0 — modele fige. Reference basse du memoire.
+#
+# Aucun parametre : c'est tout l'interet. B0 mesure ce que l'on perd a ne rien
+# faire, et son cout de reentrainement est nul par construction.
+strategy: static
+name: static

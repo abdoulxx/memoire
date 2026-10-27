@@ -1,0 +1,38 @@
+# B1 — reentrainement periodique. Reference classique.
+#
+# ETAT : FIGE le 27/10/2026 (D30). Les valeurs ci-dessous ne bougeront plus
+# avant la campagne d'evaluation (M3), qui porte sur 12 machines dont les
+# etiquettes n'ont jamais ete regardees (D17). Elles finissent dans un tableau
+# du chapitre 4, chacune avec la justification donnee ici.
+strategy: periodic
+name: periodic
+
+# T : periode de reentrainement, en minutes. Le pas d'echantillonnage du SMD
+# etant d'une minute et le stride de 1, T minutes = T fenetres.
+#
+# Le choix de T decide a lui seul de ce que B1 mesure. Trop court, B1 devient
+# une strategie de reentrainement continu dont le cout ecrase tout et que
+# personne ne deploie ; trop long, B1 devient B0 et la comparaison ne dit rien.
+# FIGE a 1440 minutes = 24 h (D30) : la periode qu'un exploitant choisirait
+# spontanement. Le compte de reentrainements est verifie et non estime — 16 sur
+# `machine-1-3` et 19 sur `machine-1-1` sous S1, contre 2 pour la strategie
+# proposee sur la meme machine et le meme flux. C'est tout l'interet de B1 comme
+# reference : un ecart de cout d'un facteur 8 a 10, mesurable, face a une
+# qualite de detection a comparer.
+#
+# Aucune valeur de T n'est « neutre », et il faut l'ecrire au memoire : trop
+# court, B1 devient du reentrainement continu que personne ne deploie ; trop
+# long, B1 devient B0 et la comparaison ne dit rien. 24 h est defendable parce
+# que c'est la periode qu'on rencontre en exploitation, pas parce qu'elle
+# optimise quoi que ce soit — l'optimiser sur les etiquettes reviendrait a
+# avantager la reference d'une facon qu'aucun exploitant ne peut reproduire.
+period_minutes: 1440
+
+# W : longueur de la fenetre glissante d'entrainement, en minutes.
+# 10080 minutes = 7 jours. Ce choix est contraint par le bas : l'entrainement
+# initial porte sur environ 23 700 fenetres (16,5 jours), et un challenger
+# entraine sur bien moins de donnees serait desavantage pour une raison qui n'a
+# rien a voir avec la derive. 7 jours est le compromis : assez pour couvrir
+# plusieurs cycles jour/nuit, assez court pour que la fenetre soit reellement
+# post-derive apres une derive soudaine.
+train_minutes: 10080

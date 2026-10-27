@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from src.strategies.base import Decision, WindowContext
+from src.strategies.base import Decision, TrainingPlan, ValidationStats, Verdict, WindowContext
 
 
 @dataclass
@@ -26,5 +26,12 @@ class StaticStrategy:
     def on_window(self, context: WindowContext) -> Decision:
         return Decision(retrain=False)
 
-    def training_set(self, history: np.ndarray, position: int) -> np.ndarray:
-        raise RuntimeError("La strategie B0 ne reentraine jamais : training_set est inatteignable.")
+    def propose(self, history: np.ndarray, position: int) -> TrainingPlan:
+        raise RuntimeError("La strategie B0 ne reentraine jamais : propose est inatteignable.")
+
+    def validate(self, stats: ValidationStats) -> Verdict:
+        raise RuntimeError("La strategie B0 ne reentraine jamais : validate est inatteignable.")
+
+    def on_fit(self, training_X: np.ndarray, position: int) -> None:
+        """Rien a recaler : B0 n'a ni moniteur de derive ni etat interne."""
+        return None

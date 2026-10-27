@@ -200,9 +200,101 @@ paragraphe 5 du cadrage, calibrer leur amplitude et montrer ce qu'ils font aux d
 
 Etat du code : **96 tests passent**, `ruff check` et `ruff format --check` sans remarque sur 40 fichiers.
 
-## Prochaine etape : M2
-Detecteurs de derive (PSI, KS, ADWIN, confirmation sur K fenetres), strategies B0, B1 et P, harnais de
-rejeu complet et metriques du paragraphe 7. Les seuils de derive et la persistance K se calibrent sur
-les 16 machines de mise au point, avec pour cible zero fausse confirmation sur les machines stables
-sans injection (D19). Rien n'est execute sur les 12 machines d'evaluation avant que ces parametres
-soient figes.
+## 2026-10-26 / 2026-10-27 — M2 : surveillance de derive, trois strategies, harnais de rejeu
+Le jalon le plus lourd du depot : c'est lui qui produit les resultats principaux du chapitre 6. Deux
+journees, et deux surprises qui ont chacune change une decision — un seuil de derive qui ne marchait
+pas du tout comme D18 le laissait croire, et une persistance K dont l'effet est l'inverse de
+l'intuition.
+
+- **Module de derive** (`src/drift/`, 9 fichiers, 1 064 lignes) : statistiques par feature (`ks.py`,
+  `psi.py`, sur une discretisation commune de la reference), reference d'entrainement
+  (`reference.py`), modele nul empirique (`null_model.py`), agregation en part de features en derive
+  (`aggregate.py`), persistance sur K fenetres (`confirmation.py`), signal secondaire ADWIN sur le
+  taux d'alertes (`adwin.py`) et le moniteur qui combine tout (`monitor.py`). La surveillance porte
+  sur les **152 features** et non sur les 38 metriques brutes, comme le demande le §6.
+- **Trois strategies et une ablation** (`src/strategies/`, 747 lignes) : B0 figee, B1 periodique, P
+  proposee, A1 = P sans validation. A1 n'a **aucun code propre** : c'est la meme classe avec
+  `validation_enabled = False`, sans quoi l'ecart P - A1 melangerait l'effet de la validation a celui
+  d'une seconde implementation.
+- **Contrat champion / challenger** (D26) : `on_window` -> `propose` -> le harnais entraine et score
+  -> `validate` -> `on_fit`. La strategie decide et choisit ses donnees, le harnais entraine, score,
+  mesure et journalise. L'interdiction du §6 (« aucune etiquette dans une decision de la strategie »)
+  devient verifiable par la signature des types et non par relecture ; un test l'affirme directement.
+- **Le seuil de derive absolu de D18 ne marchait pas** (D25), et c'etait le defaut le plus grave des
+  deux journees. D18 avait mesure un contraste reel — 0,0 % de features au-dela de KS 0,5 sur une
+  machine stable contre 26,3 % sur une machine derivante — mais **entre les deux moities entieres**
+  d'une machine. Le moniteur en service compare tout autre chose : la reference d'entrainement contre
+  une fenetre recente de 500 fenetres, soit 8,3 h fortement autocorrelees, qui ne couvrent jamais
+  l'etendue d'un entrainement de 20 jours. Mesure sur le perimetre de mise au point, scenario `none`,
+  seuil absolu de 0,5 : part mediane de features « en derive » de 0,1500 a 0,4914 sur les machines
+  **stables** et de 0,1667 a 0,4621 sur les **instables**. Les deux populations se recouvrent
+  entierement — aucune part declenchante ne pouvait les separer. Remplace par un **modele nul
+  empirique** : le seuil de chaque feature est un quantile eleve de la statistique atteinte en faisant
+  glisser un bloc de meme taille sur son propre entrainement. Contraste retabli, facteur median par
+  machine de **6,4**. Sur machine-1-3, les seuils vont de 0,0045 a 0,9452 (mediane 0,6829) sur 464
+  blocs : un scalaire ne pouvait pas convenir.
+- **Calibrage par balayage, pas par rejeu** (D28) : un point de grille ne change ni les features, ni
+  la reference, ni la distribution nulle, seulement deux comparaisons. Le flux est donc parcouru une
+  fois par trace et des centaines de points sont evalues sur la matrice conservee en memoire.
+  Equivalence verifiee et non supposee : les fonctions vectorisees sont testees contre la classe
+  `Confirmation` reellement utilisee en rejeu sur **150 cas aleatoires**, avec egalite exacte de la
+  fenetre de confirmation. Cout : **536 points de grille sur 320 traces** en trois balayages, la ou
+  un balayage par rejeu aurait demande plusieurs jours.
+- **Parametres de la surveillance figes** (D29, `results/calibration_m2_dev.csv`, 42 880 lignes) :
+  R = 500, quantile 0,999, marge 1,0, part declenchante 0,20, **K = 960** (16 h). C'est le point le
+  plus sensible parmi les 398 (sur 536) qui ne produisent **aucun** faux signal sur les machines
+  stables : **51 detections sur 64 injections (79,7 %)**, delai median de confirmation 2 431 fenetres.
+  Par scenario : S1 14/16, S3 15/16, S2 13/16, **S4 9/16** — la derive recurrente est le cas faible,
+  et c'est coherent, un regime qui alterne plus vite que K ne presente jamais K fenetres consecutives
+  de signal.
+- **Le resultat contre-intuitif du jalon** : le taux de detection **monte** avec K jusqu'a 960 avant
+  de descendre (36/64 a K = 240, 51/64 a 960, 45/64 a 2 400). L'explication est structurelle : la
+  reference est figee tant qu'aucun reentrainement n'a eu lieu et la confirmation est latchee, donc
+  il y a au plus **une** confirmation par flux. Un K trop court confirme avant *t_d*, sur une
+  fluctuation, et **verrouille** la detection de la vraie derive — 28 des 64 injections sont perdues
+  ainsi a K = 240, contre 4 a K = 960. Le cas est visible a l'etat pur sur machine-1-6 : confirmation
+  a la fenetre 5 483 alors que *t_d* vaut 9 905, sur les quatre scenarios, et les quatre injections
+  manquees. C'est une figure du 6.2.3, pas une note de reglage.
+- **Plancher structurel d'entrainement** (D27) : un challenger n'est entraine que si la fenetre
+  disponible permet de calculer son propre modele nul. Sans cela, le modele promu etait parfois un
+  modele que le moniteur ne savait plus surveiller — la surveillance devenait aveugle pour tout le
+  reste du flux, ce qui est pire que de ne pas promouvoir. Le plancher s'applique a l'identique a P
+  et a A1, sinon l'ecart P - A1 ne mesurerait plus la validation.
+- **Harnais de rejeu et campagne** (`src/evaluation/replay.py`, `campaign.py`, `promotions.py`) :
+  evaluation prequentielle, un seul flux par (machine, scenario, graine) rejoue tel quel par chaque
+  strategie, `summary.csv` reprenable par `run_id`. Les promotions degradantes sont calculees **hors
+  ligne** depuis les traces, avec scoring fantome du modele remplace : le calcul utilise les
+  etiquettes, il ne peut donc pas vivre dans la strategie, et son cout est exclu du cout mesure.
+- **Campagne de mise au point** (`results/summary_m2_dev.csv`, 192 rejeux = 16 machines x S1 x 3
+  graines x 4 strategies, 1,0 h de calcul cumule). Elle sert a calibrer **delta** et a verifier que le
+  harnais tient la distance, pas a repondre aux hypotheses. Vue d'ensemble, moyenne par machine
+  d'abord (OBS06) : B0 F1 0,236 et aucun reentrainement ; B1 0,302 pour **17,5** reentrainements ;
+  A1 0,279 pour 2,48 ; P 0,271 pour 1,90 reentrainement, dont 1,50 promu et 0,40 rejete. **P n'est pas
+  devant B1 en F1 sur ce perimetre**, pour un dixieme du cout — c'est consigne des maintenant (D30)
+  pour qu'on ne puisse pas, a M3, presenter comme une decouverte un resultat deja visible ici.
+- **delta mesure et non postule** (D30) : le §7 demande de le calibrer sur l'ecart-type inter-graines
+  du F1. Mesure : mediane 0,0301, q75 0,0450, **maximum 0,0997**. Retenu **delta = 0,10**, juste
+  au-dessus de ce maximum, pour qu'aucune degradation declaree ne soit imputable au bruit de graine.
+  La commande `mdrift promotions` sort une ligne par promotion (`results/promotions_m2_dev.csv`,
+  **1 031 promotions**) : le §7 demande la **distribution** des ecarts, pas seulement leur comptage,
+  et repartir des traces permet de balayer huit valeurs de delta sans relancer un rejeu. L'ordre
+  P < A1 tient pour les huit. Nuance qui va au memoire telle quelle : P promeut 72 fois contre 119
+  pour A1, donc sa protection vient surtout de ce qu'il **promeut moins** (9,7 % contre 12,6 % de
+  promotions degradantes, un ecart bien plus faible que l'ecart en valeur absolue).
+- **Parametres des strategies figes** (D30) : W = 10 080 min, V = 1 440, C = 1 440, T = 1 440,
+  `min_train_minutes` = 5 450. Decouverte en figeant : **C est structurellement inerte**, parce qu'une
+  promotion remet le moniteur a zero et qu'il lui faut R + K = 1 460 fenetres pour reconfirmer, soit
+  plus que C. Le parametre est conserve mais **declare inerte** plutot que laisse passer pour actif,
+  et un test fixe l'invariant.
+
+Etat du code : **157 tests passent**, `ruff check` et `ruff format --check` sans remarque sur 56
+fichiers. Parametres de derive et de strategies figes ; rien n'a encore ete execute sur les 12
+machines d'evaluation.
+
+## Prochaine etape : M3
+Campagne complete sur le perimetre d'evaluation : 12 machines x 4 scenarios x 5 graines x 4
+strategies, a configuration **figee** (D29, D30). Puis les tableaux et figures du chapitre 6, le test
+de Wilcoxon apparie sur les graines pour H1 et H2, et le comptage des promotions degradantes pour H3.
+L'etude de la derive naturelle (scenario `none`, les 13 machines instables de mise au point, quatre
+strategies) est disponible et reste a lancer : c'est elle qui donne les fausses confirmations de
+derive du §7, en complement des 3 machines stables sur lesquelles le calibrage a pu s'appuyer.

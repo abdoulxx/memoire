@@ -23,6 +23,38 @@ zero_division:
 
 recovery:
   # Temps de recuperation : retour du F1 glissant a ce niveau relatif
-  # d'avant-derive. Utilise a partir de M2.
+  # d'avant-derive.
   f1_ratio: 0.90
+  # Taille R de la fenetre glissante du F1. Apres t_d, la fenetre est tronquee
+  # pour ne contenir QUE des fenetres post-derive : un F1 glissant a cheval sur
+  # l'instant de derive remonterait du seul fait qu'il contient encore des
+  # fenetres d'avant, et ferait conclure a une recuperation inexistante.
   rolling_windows: 500
+  # Nombre minimal de fenetres post-derive avant qu'une recuperation puisse
+  # etre declaree. Sans ce plancher, les premieres valeurs du F1 glissant
+  # tronque portent sur 1 a 2 fenetres et declarent n'importe quoi.
+  min_windows: 50
+  # Plancher du niveau pre-derive sous lequel le critere est declare indefini.
+  # OBS09 : le F1 d'avant-derive est nul sur 6 des 16 machines de mise au
+  # point ; 90 % de zero valant zero, le critere serait satisfait par un
+  # detecteur qui n'alerte jamais. La metrique vaut alors None et le statut
+  # `niveau_pre_derive_nul` est rapporte, plutot qu'une recuperation fictive.
+  min_pre_drift_f1: 0.05
+
+promotions:
+  # Promotions degradantes (§7) : apres chaque promotion, le modele remplace
+  # est encore score sur ces N fenetres, en parallele (shadow, D16). Le calcul
+  # est fait hors ligne depuis les traces, et ce cout est exclu du cout de la
+  # strategie.
+  shadow_windows: 500
+  # Ecart de F1 au-dela duquel une promotion est dite degradante. FIGE a M2
+  # (D30), calibre comme le demande le §7 sur l'ecart-type inter-graines du F1,
+  # mesure sur `results/summary_m2_dev.csv` (16 machines x 3 graines x 4
+  # strategies) : mediane 0,0301, troisieme quartile 0,0450, **maximum 0,0997**.
+  # 0,10 se place juste au-dessus de ce maximum : aucune degradation declaree
+  # ne peut etre attribuee au seul bruit de graine sur le perimetre de mise au
+  # point. Un seuil plus bas (0,02 a 0,05) compterait du bruit, un seuil plus
+  # haut ne retiendrait plus que les effondrements. La conclusion ne tient pas
+  # a ce choix : l'ordre P < A1 est inchange pour tout delta de 0,02 a 0,30
+  # (`results/promotions_m2_dev.csv`, balaye sur huit valeurs).
+  delta_f1: 0.10

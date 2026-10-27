@@ -1,0 +1,108 @@
+# P — strategie proposee : reentrainement declenche par une derive confirmee,
+# avec validation avant mise en service. C'est la contribution du memoire.
+#
+# ETAT : FIGE le 27/10/2026 (D30). Les valeurs ci-dessous ne bougeront plus
+# avant la campagne d'evaluation (M3), qui porte sur 12 machines dont les
+# etiquettes n'ont jamais ete regardees (D17). Elles finissent dans un tableau
+# du chapitre 4, chacune avec la justification donnee ici.
+strategy: proposed
+name: proposed
+
+# Etapes 1 et 2 — surveillance et confirmation.
+# Les parametres du moniteur sont dans `configs/drift.yaml`. Ce bloc permet de
+# les surcharger pour une variante, sans toucher au fichier de reference : c'est
+# ce qui sert au calibrage et aux ablations.
+drift_overrides: {}
+
+# Etape 3 — reentrainement.
+# W : donnees de reentrainement, en minutes. FIGE a 10080 (7 jours), meme valeur
+# que B1 pour que la comparaison porte sur le declenchement et non sur la
+# quantite de donnees — c'est la condition pour que l'ecart P - B1 soit
+# interpretable.
+#
+# Le gel de D29 confirme ce choix par le bas plutot que de le remettre en cause.
+# Le delai median de confirmation mesure est de 2 431 fenetres apres t_d, et
+# t_d est tire dans [40 %, 60 %] du flux : une confirmation tombe donc en
+# pratique entre les fenetres 10 000 et 20 000. A cet instant, les W = 10 080
+# dernieres minutes couvrent largement l'apres-derive, ce qui est exactement ce
+# qu'un challenger doit apprendre. Une fenetre nettement plus courte
+# desavantagerait le challenger pour une raison etrangere a la derive :
+# l'entrainement initial porte sur environ 23 700 fenetres.
+train_minutes: 10080
+
+# Plancher sur la taille du bloc d'entrainement du challenger, en minutes.
+# Ce n'est pas un critere de validation mais une contrainte **structurelle**,
+# appliquee identiquement a P et a A1 pour que l'ablation n'isole que la
+# validation. Deux raisons, mesurees et non supposees :
+#
+#  - le modele nul du moniteur glisse un bloc de R = 500 fenetres sur
+#    l'entrainement pour calibrer le seuil de chaque feature. En dessous de 500
+#    fenetres il n'y a pas un seul bloc, et le seuil n'existe pas : le
+#    challenger promu serait un modele que la strategie ne saurait plus
+#    surveiller. Ce plancher dur est applique par le code quoi que dise ce
+#    fichier ;
+#  - pour qu'un quantile a 0,999 ait un sens, il faut nettement plus d'un bloc.
+#    Avec un pas de glissement de R / 10 = 50 fenetres, 5450 fenetres donnent
+#    100 blocs.
+#
+# FIGE a 5450 (D30). Verifie contre le calibrage de D29 et non suppose : la
+# confirmation la plus precoce observee sur tout le perimetre de mise au point
+# tombe a la fenetre 5 483 (machine-1-6), et toutes les autres sont posterieures
+# a la fenetre 10 000. Le plancher ne differe donc au plus qu'une confirmation
+# sur 80, et c'est une confirmation prematuree — exactement le cas qu'il doit
+# retarder. Aucune vraie derive n'est concernee : sur S1 a S4, t_d est tire dans
+# [40 %, 60 %] du flux, soit au-dela de la fenetre 9 400 sur le SMD.
+#
+# Une confirmation obtenue avant ce plancher n'est pas perdue : elle est mise en
+# attente et declenche des que l'historique suffit.
+min_train_minutes: 5450
+
+# V : fenetre reservee a la validation, en minutes, prise a la fin de W. Elle
+# est retiree de l'entrainement : le challenger est donc entraine sur W - V.
+# 1440 minutes = 24 h, soit 14 % de W. Assez pour que le taux d'alertes mesure
+# ne soit pas du bruit (1 440 fenetres, et un taux de 0,1 % y est encore
+# distinguable de zero), assez peu pour ne pas amputer l'entrainement.
+reserved_minutes: 1440
+
+# C : refroidissement apres une promotion, en minutes. FIGE a 1440 (24 h).
+#
+# A SAVOIR, et c'est une consequence du gel de D29 : avec R = 500 et K = 960, ce
+# parametre n'est **jamais la contrainte active**. `fit_reference` reconstruit le
+# tracker et remet la persistance a zero a chaque promotion (voir
+# `src/drift/monitor.py`) : il faut donc au minimum R + K = 1 460 fenetres apres
+# une promotion pour qu'une nouvelle confirmation soit possible, soit plus que
+# les 1 440 du refroidissement. Le plancher structurel du moniteur domine.
+# La valeur est conservee pour trois raisons : elle reste la garantie que la
+# strategie ne peut pas partir en rafale si K etait abaisse pour une ablation ;
+# elle protege le mode en ligne, ou le pas de collecte peut differer de la
+# minute ; et la retirer ferait disparaitre du chapitre 4 un parametre que la
+# litterature attend dans une politique de reentrainement. Le fait qu'elle ne
+# morde pas est un resultat a declarer, pas un defaut a cacher.
+cooldown_minutes: 1440
+
+# Etape 4 — validation. GARDE-FOU, PAS CONCOURS.
+# Sans etiquettes, aucun critere ne classe fiablement deux detecteurs (mesure a
+# M0 ; Ma et al., 2023). On ne cherche donc pas le meilleur des deux, seulement
+# a rejeter l'inutilisable. Les trois motifs de rejet sont calculables sans
+# aucune etiquette, ce qui est la regle du §6.
+validation:
+  enabled: true
+  # Rejet si moins de ce nombre de fenetres ont ete observees depuis le debut du
+  # flux : en dessous, on ne sait pas encore ce qu'est le comportement normal.
+  min_history: 300
+  # Rejet si le taux d'alertes du challenger sur la fenetre reservee sort de ces
+  # bornes. Un modele qui n'alerte jamais est inutile, un modele qui alerte sur
+  # 30 % des fenetres est inexploitable : les deux se voient sans etiquettes.
+  # Bornes a calibrer.
+  alert_rate_min: 0.001
+  alert_rate_max: 0.30
+
+# Exclusion des fenetres suspectes de l'entrainement du challenger.
+# `none` PAR DEFAUT, et c'est un resultat mesure (D13) : exclure les alertes du
+# champion fait s'effondrer le challenger sous saturation, parce que sous derive
+# le champion alerte sur presque tout et qu'il ne reste alors plus de donnees
+# representatives du nouveau regime. `top_percentile` et `champion_alerts`
+# restent implementees pour l'ablation.
+exclusion:
+  method: none
+  percentile: 99.0
