@@ -25,8 +25,8 @@ Fenetre de travail autonome accordee : du **28/10/2026 16h55** au **29/10/2026 0
 | A | Campagne principale S1-S4 : 12 machines d'evaluation x 4 scenarios x 4 strategies x 5 graines = **960 rejeux** | **terminee** le 28/10 a 18h13 (960/960) |
 | B | Derive naturelle : scenario `none`, 13 machines instables de mise au point, 4 strategies -> fausses confirmations du §7, perimetre etendu aux 28 machines | **terminee** le 28/10 a 18h28 (112 rejeux) |
 | C | Tests statistiques H1 / H2 / H3 (Wilcoxon apparie, moyenne par machine d'abord — OBS06) | **terminee** le 28/10 a 18h40 (H2 verifiee, H1 non, H3 avec un cout) |
-| D | Figures 300 dpi et tableaux du chapitre 6 | **en cours** |
-| E | D31+ dans `decisions.md`, entree M3 de `journal.md`, suppression de ce fichier | a faire |
+| D | Figures 300 dpi et tableaux du chapitre 6 | **terminee** le 28/10 a 19h05 (6 figures + 5 tableaux) |
+| E | D31+ dans `decisions.md`, entree M3 de `journal.md`, suppression de ce fichier | **en cours** |
 
 ## Resultats de la phase A (lecture brute, avant les tests statistiques)
 
@@ -258,6 +258,90 @@ non-regression fixe ce comportement (`tests/test_hypotheses.py`) : 20 machines d
 9 seulement a ecart non nul — il faut au moins 6 ecarts non nuls pour que Wilcoxon
 puisse descendre sous p = 0,05, et en meme temps une majorite d'ex aequo pour que
 la mediane soit nulle ; avec 12 machines les deux conditions sont incompatibles.
+
+## Resultats de la phase D (figures et tableaux du chapitre 6)
+
+Une commande, `mdrift figures-m3`, produit **six figures a 300 dpi** dans
+`docs/figures/` et **un fichier de tableaux** `docs/tableaux_chapitre6.md`. Tout
+est relu depuis `results/` : aucune figure n'est produite par un calcul refait
+pour l'occasion, aucun nombre n'est recopie a la main. Le fichier de tableaux
+porte en tete l'avertissement qu'il est engendre et ne doit pas etre edite.
+
+| Figure | Ce qu'elle montre |
+|---|---|
+| `f1_glissant_machine-2-1_s1_soudaine_seed42.png` | Les 4 strategies sur un meme flux, instant de derive et promotions marques |
+| `f1_glissant_machine-2-2_s4_recurrente_seed42.png` | Idem sur le scenario recurrent |
+| `cout_reentrainement.png` | Reentrainements et secondes CPU, par scenario |
+| `f1_avant_apres.png` | F1 de part et d'autre de l'instant de derive |
+| `qualite_contre_cout.png` | F1 apres derive contre cout, axe des couts en symlog |
+| `confirmations_contre_k.png` | Effet de K sur la confirmation, au point de fonctionnement fige |
+
+La machine du F1 glissant n'est pas choisie a la main : `--machine mediane`
+retient celle dont le F1 apres derive de P est **le plus proche de la mediane**
+des machines. C'est reproductible, et surtout ce n'est pas la plus flatteuse.
+
+### Trois defauts corriges dans les figures
+
+**La courbe de la strategie proposee etait invisible.** Sur un meme flux, P et A1
+tracent la meme courbe partout ou la validation n'a rien rejete, et P colle a B0
+partout ou elle n'a pas reentraine. Avec quatre traits identiques, la courbe rouge
+de P disparaissait entierement sous l'orange de A1 : la figure centrale du
+chapitre 6 ne montrait pas la contribution du memoire. Les traits sont desormais
+empiles par largeur decroissante (B0 en bande large et pale, P au milieu, A1 en
+pointilles au-dessus), si bien que deux courbes confondues restent lisibles — un
+trait fin dans une bande large, ou des tirets sur un trait plein. Une note sous
+l'axe l'explique au lecteur.
+
+**Les legendes masquaient les barres les plus hautes** de `cout_reentrainement`
+et de `f1_avant_apres` — dont la barre B1 de S1, que le chapitre commente. Les
+legendes sont passees sous les panneaux.
+
+**Une colonne mal nommee.** Le tableau de la derive naturelle intitulait
+« fausses confirmations » la meme colonne pour les machines stables et pour les
+machines instables. Sur une machine instable la confirmation n'est pas fausse :
+le criblage a montre que ces machines derivent reellement entre leur moitie train
+et leur moitie test (OBS03), et confirmer y est le comportement attendu. La
+colonne s'appelle maintenant « confirmations de derive » et une note dit que les
+deux lignes ne se lisent pas dans le meme sens.
+
+### Ce que la courbe de K montre, et qui n'etait pas evident
+
+| K | Derives injectees detectees | Confirmees avant l'instant de derive | Machines stables confirmees a tort |
+|---|---|---|---|
+| 240 | 56,2 % | 28 / 64 | 3 / 3 |
+| 600 | 70,3 % | 16 / 64 | 1 / 3 |
+| **960 (retenu)** | **79,7 %** | **4 / 64** | **0 / 3** |
+| 1440 | 73,4 % | 4 / 64 | 0 / 3 |
+| 2400 | 70,3 % | 4 / 64 | 0 / 3 |
+
+Le taux de detection **monte puis redescend** avec K, ce qui est contre-intuitif
+tant qu'on ne voit pas la troisieme colonne. La confirmation etant latchee — une
+au plus par flux —, un K trop court confirme *avant* l'instant de derive, sur une
+simple fluctuation, et verrouille la detection de la vraie derive qui suit : 28
+injections perdues ainsi a K = 240, contre 4 a K = 960. La non-monotonie est
+**structurelle, pas statistique**, et la figure porte les trois courbes pour que
+le chapitre puisse le dire sans arriere-pensee.
+
+Reserve a ecrire : la colonne « machines stables » de cette figure ne porte que
+**3 machines**, les seules stables du perimetre de mise au point, donc un point y
+vaut 33 points de pourcentage. C'est la mesure de la phase B, sur **15** machines
+stables, qui fait foi pour la metrique de specificite du §7 ; cette courbe-ci ne
+sert qu'a justifier le choix de K.
+
+### Tableaux produits
+
+1. Synthese par strategie, quatre scenarios confondus, **13 metriques du §7**.
+2. F1 apres la derive, par scenario.
+3. Reentrainements declenches, par scenario.
+4. Tests d'hypotheses, reprise directe de `results/hypotheses.csv`.
+5. Derive naturelle, machines stables contre machines instables.
+
+Toutes les valeurs sont des **moyennes sur les machines ± erreur standard
+inter-machines**, apres moyenne des graines machine par machine (OBS06). Une
+metrique qui n'existe pas pour une strategie s'affiche `—` et jamais `0` : B0 n'a
+pas de delai de detection de derive parce qu'il ne surveille rien, et ecrire « 0 »
+ferait croire a une detection instantanee, soit l'inverse exact de ce qu'il fait.
+Un test fige ce comportement.
 
 ## Dette technique relevee pendant M3
 

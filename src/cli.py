@@ -691,6 +691,7 @@ def figures_m3(
         plot_f1_glissant,
         plot_qualite_contre_cout,
     )
+    from src.evaluation.result_tables import ecrire_tableaux
 
     synthese = pd.read_csv(summary_path)
     injectes = synthese[synthese.scenario != "none"]
@@ -737,6 +738,8 @@ def figures_m3(
             )
         )
         typer.echo(f"{scenario} : F1 glissant trace sur {choisie} (graine {seed}).")
+
+    sorties.append(ecrire_tableaux(summary_path=summary_path))
 
     typer.echo("")
     for chemin in sorties:

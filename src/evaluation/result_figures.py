@@ -49,6 +49,22 @@ COULEURS = {
     "proposed": "#d62728",
     "ablation": "#ff7f0e",
 }
+# Sur un meme flux, P et A1 tracent la MEME courbe partout ou la validation
+# n'a rien rejete, et P colle a B0 partout ou elle n'a pas reentraine. Avec des
+# traits identiques, la courbe de la strategie proposee disparaissait purement et
+# simplement sous celle de A1 : la figure centrale du chapitre 6 ne montrait pas
+# sa contribution. On empile donc les traits par largeur decroissante, la courbe
+# du dessus etant en pointilles — deux courbes confondues restent lisibles comme
+# un trait fin dans une bande large, ou comme des tirets sur un trait plein.
+STYLES_F1 = {
+    "static": {"linewidth": 3.2, "alpha": 0.40, "linestyle": "-", "zorder": 1},
+    "periodic": {"linewidth": 1.2, "alpha": 0.90, "linestyle": "-", "zorder": 2},
+    "proposed": {"linewidth": 2.0, "alpha": 0.95, "linestyle": "-", "zorder": 3},
+    "ablation": {"linewidth": 1.1, "alpha": 0.95, "linestyle": (0, (4, 3)), "zorder": 4},
+}
+# Decalage vertical des marques de promotion, pour qu'elles ne se superposent pas.
+MARQUES_F1 = {"static": -0.020, "periodic": -0.020, "proposed": -0.050, "ablation": -0.080}
+
 SCENARIOS = {
     "s1_soudaine": "S1 soudaine",
     "s2_incrementale": "S2 incrementale",
@@ -175,9 +191,9 @@ def plot_f1_glissant(
         axes.plot(
             heures,
             f1,
-            linewidth=1.1,
             color=COULEURS[strategie],
             label=LIBELLES[strategie],
+            **STYLES_F1[strategie],
         )
 
         # Promotions : une marque par changement de modele en service.
@@ -187,7 +203,7 @@ def plot_f1_glissant(
             if len(visibles):
                 axes.scatter(
                     visibles * SAMPLING_INTERVAL_SECONDS / 3600.0,
-                    np.full(len(visibles), -0.02),
+                    np.full(len(visibles), MARQUES_F1[strategie]),
                     marker="^",
                     s=18,
                     color=COULEURS[strategie],
@@ -217,13 +233,20 @@ def plot_f1_glissant(
 
     axes.set_xlabel("Temps depuis le debut du flux (heures)")
     axes.set_ylabel(f"F1 sur les {largeur} dernieres fenetres")
-    axes.set_ylim(-0.02, 1.0)
+    axes.set_ylim(-0.10, 1.0)
     axes.grid(alpha=0.25, linewidth=0.5)
     axes.legend(loc="upper left", fontsize=8, framealpha=0.9, ncols=2)
     axes.set_title(
         f"{machine} — {SCENARIOS.get(scenario, scenario)} — graine {seed}"
         "  (triangles : promotions de modele)",
         fontsize=10,
+    )
+    axes.annotate(
+        "courbes confondues : trait fin dans une bande large, ou tirets sur trait plein",
+        xy=(0.0, -0.17),
+        xycoords="axes fraction",
+        fontsize=7.5,
+        color="#444444",
     )
 
     destination = (
@@ -281,7 +304,15 @@ def plot_cout_reentrainement(
         axes.set_ylabel(unite)
         axes.set_title(titre, fontsize=10)
         axes.grid(axis="y", alpha=0.25, linewidth=0.5)
-    paires[0].legend(loc="upper left", fontsize=8, framealpha=0.9)
+    poignees, etiquettes = paires[0].get_legend_handles_labels()
+    figure.legend(
+        poignees,
+        etiquettes,
+        loc="outside lower center",
+        ncols=4,
+        fontsize=8,
+        frameon=False,
+    )
     figure.suptitle(
         "Cout du reentrainement (moyenne sur 12 machines d'evaluation, "
         "barres : erreur standard inter-machines)",
@@ -336,7 +367,15 @@ def plot_f1_avant_apres(
         axes.set_title(titre, fontsize=10)
         axes.grid(axis="y", alpha=0.25, linewidth=0.5)
     paires[0].set_ylabel("F1 par fenetre")
-    paires[1].legend(loc="upper right", fontsize=8, framealpha=0.9)
+    poignees, etiquettes = paires[1].get_legend_handles_labels()
+    figure.legend(
+        poignees,
+        etiquettes,
+        loc="outside lower center",
+        ncols=4,
+        fontsize=8,
+        frameon=False,
+    )
     figure.suptitle(
         "Qualite de detection de part et d'autre de l'instant de derive "
         "(12 machines d'evaluation, 5 graines)",
