@@ -22,11 +22,47 @@ Fenetre de travail autonome accordee : du **28/10/2026 16h55** au **29/10/2026 0
 
 | Phase | Contenu | Etat |
 |---|---|---|
-| A | Campagne principale S1-S4 : 12 machines d'evaluation x 4 scenarios x 4 strategies x 5 graines = **960 rejeux** | **en cours** (lancee 16h55) |
-| B | Derive naturelle : scenario `none`, 13 machines instables de mise au point, 4 strategies -> fausses confirmations du §7 | a faire |
+| A | Campagne principale S1-S4 : 12 machines d'evaluation x 4 scenarios x 4 strategies x 5 graines = **960 rejeux** | **terminee** le 28/10 a 18h13 (960/960) |
+| B | Derive naturelle : scenario `none`, 13 machines instables de mise au point, 4 strategies -> fausses confirmations du §7 | **en cours** (lancee 18h15) |
 | C | Tests statistiques H1 / H2 / H3 (Wilcoxon apparie, moyenne par machine d'abord — OBS06) | a faire |
 | D | Figures 300 dpi et tableaux du chapitre 6 | a faire |
 | E | D31+ dans `decisions.md`, entree M3 de `journal.md`, suppression de ce fichier | a faire |
+
+## Resultats de la phase A (lecture brute, avant les tests statistiques)
+
+960 rejeux, 12 machines d'evaluation, 4 scenarios, 5 graines. Moyennes par machine
+d'abord (OBS06), puis moyenne sur les 12 machines, tous scenarios confondus :
+
+| Metrique | B0 (fige) | B1 (periodique) | P (proposee) | A1 (sans validation) |
+|---|---|---|---|---|
+| F1 par fenetre | 0,265 | 0,252 | **0,265** | 0,277 |
+| F1 apres derive | 0,306 | 0,324 | 0,309 | 0,326 |
+| Rappel par evenement | 0,773 | 0,708 | 0,748 | 0,742 |
+| Fausses alertes / h | 3,212 | 1,309 | 2,641 | 2,066 |
+| Reentrainements | 0 | 16,25 | **1,375** | 1,542 |
+| Secondes CPU de reentrainement | 0 | 3,941 | **0,333** | 0,375 |
+| Promotions degradantes | 0 | 0,517 | **0,121** | 0,158 |
+
+Trois choses a ne pas enjoliver au chapitre 6 :
+
+1. **P egale B0 sur le F1 global** (0,265 contre 0,265) et ne le depasse que de peu
+   apres la derive (0,309 contre 0,306). L'ecart attendu pour H1 est donc faible ; les
+   tests de la phase C diront s'il est detectable. Sur le perimetre de mise au point,
+   P etait *derriere* B1 (0,271 contre 0,302) ; sur le perimetre d'evaluation il passe
+   devant (0,265 contre 0,252). Les parametres etaient figes avant (D29, D30) : cette
+   inversion est un resultat, pas un reglage.
+2. **Le gain de P sur B1 est un gain de cout, pas de qualite** : 12 fois moins de
+   reentrainements et 12 fois moins de secondes CPU, pour un F1 comparable. C'est
+   exactement la formulation de la question du memoire (« a moindre cout »), mais il
+   faut le dire ainsi et non pretendre a une meilleure detection.
+3. **Les delais sont enormes** : delai de confirmation de derive de 4091 minutes en
+   moyenne et temps de recuperation de 2413 minutes. K = 960 fenetres valent 16 heures :
+   le moniteur est deliberement lent, par construction (D19 : K = 30 confirmait une
+   derive sur 13 des 15 machines stables). A commenter comme un arbitrage
+   specificite / reactivite, chiffres a l'appui, pas comme un defaut cache.
+
+Le detail par scenario est dans `results/summary.csv` ; les promotions degradantes
+sont recalculables hors ligne a n'importe quel delta avec `mdrift promotions`.
 
 ## Commandes de reprise
 
