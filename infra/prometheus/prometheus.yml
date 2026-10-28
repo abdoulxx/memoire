@@ -1,0 +1,61 @@
+# Collecte Prometheus (livrable M4, phase B).
+#
+# Pourquoi 15 s de pas de collecte alors que le detecteur travaille a la minute :
+# le flux evalue est fait de fenetres d'une minute, comme le SMD (§4.1), et c'est
+# le pas utilise par le harnais de rejeu. Mais les metriques de type compteur
+# (requetes, erreurs) se lisent par un `rate()` sur une fenetre, et un `rate()`
+# calcule sur deux points seulement est tres bruite. Quatre points par minute
+# donnent un taux lisible sans multiplier la retention par quatre par rapport a
+# ce que le serveur peut tenir — l'enregistreur de la phase D interroge ensuite
+# l'API avec un `step` de 60 s, de sorte que les donnees reelles et le SMD ont le
+# meme pas d'echantillonnage.
+#
+# Aucun nom d'hote ni IP ici : les cibles sont les noms de service du reseau
+# Docker Compose (§4.3).
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  # Les regles ne servent pas encore ; l'intervalle est fixe pour que la
+  # configuration soit complete et reproductible.
+  evaluation_interval: 60s
+  external_labels:
+    # Etiquette d'environnement, utile si une session de demonstration et une
+    # session d'enregistrement cohabitaient un jour dans le meme Prometheus.
+    environnement: memoire-test
+
+scrape_configs:
+  # Prometheus lui-meme : permet de voir si la collecte decroche pendant une
+  # injection, ce qui invaliderait la session.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # L'appli de test : metriques applicatives et jauges d'injection.
+  - job_name: app
+    static_configs:
+      - targets: ["app:8000"]
+        labels:
+          role: appli_de_test
+
+  # Metriques hote : CPU, RAM, disque, reseau (§4.2).
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  # Metriques par conteneur : indispensable pour voir l'effet d'une injection
+  # confinee dans un conteneur dedie, et pour verifier que les limites Docker
+  # ont bien tenu (§4.3).
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+
+  # Service de detection (M5). La cible est declaree des maintenant pour que la
+  # configuration n'ait pas a changer entre M4 et M5 ; tant que le service n'est
+  # pas lance, la cible est simplement `down`, ce qui est visible et sans effet
+  # sur les autres collectes.
+  - job_name: detection
+    static_configs:
+      - targets: ["detection:8001"]
+        labels:
+          role: service_detection

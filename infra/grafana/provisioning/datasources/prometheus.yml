@@ -1,0 +1,22 @@
+# Source de donnees Grafana, provisionnee (livrable M4, phase B).
+#
+# Provisionnee et non cliquee a la main : une capture d'ecran de Grafana ne vaut
+# pour le memoire que si le tableau de bord qui l'a produite est dans le depot et
+# se recree a l'identique. L'URL est un nom de service Docker, pas un nom d'hote.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    # Fixe, et non engendre : les JSON de tableaux de bord le referencent.
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      # Doit rester egal au `scrape_interval` de infra/prometheus/prometheus.yml :
+      # c'est ce que Grafana utilise comme pas minimal et comme valeur de `$__rate_interval`.
+      timeInterval: 15s
+      httpMethod: POST
+    editable: false

@@ -1,0 +1,22 @@
+# Surcouche de verification sur un poste Windows / Docker Desktop.
+#
+#   docker compose -f docker-compose.yml -f infra/compose/compose.windows.yml up -d
+#
+# Elle existe pour une seule raison : sur Docker Desktop, la racine de la machine
+# virtuelle n'est ni « shared » ni « slave », et node-exporter refuse de demarrer
+# avec la propagation `rslave` que demande un hote Linux. Sans la racine montee,
+# node-exporter n'expose pas les metriques de systeme de fichiers — c'est sans
+# importance pour verifier que la collecte fonctionne, et inacceptable pour
+# enregistrer une session. Le fichier de base reste celui du serveur ; cette
+# surcouche ne sert qu'a la mise au point.
+#
+# `!override` remplace la liste au lieu de la completer : sans ce marqueur,
+# Compose concatene les deux listes et le montage fautif reste en place.
+services:
+  node-exporter:
+    volumes: !override
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    command: !override
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys

@@ -1,0 +1,213 @@
+# Pile de collecte et de visualisation du jalon M4 (phase B).
+#
+#   cp .env.example .env   # puis renseigner GRAFANA_ADMIN_PASSWORD
+#   docker compose up -d
+#   docker compose ps
+#
+# Cible reelle : le serveur Linux de Sidy. Sur un poste Windows, `app`,
+# `prometheus` et `grafana` fonctionnent ; `node-exporter` et `cadvisor` mesurent
+# la machine virtuelle de Docker Desktop et non le poste, ce qui suffit a
+# verifier la collecte mais pas a produire une session exploitable.
+#
+# Trois choix qui tiennent au §4.3 du cadrage :
+#
+#  1. Aucun port n'est publie sur toutes les interfaces. Tout est lie a
+#     ${BIND_ADDR}, qui vaut 127.0.0.1 par defaut : sur le serveur, Grafana et
+#     Prometheus ne sont pas joignables depuis Internet, et l'acces se fait par
+#     un tunnel SSH. Mettre 0.0.0.0 dans .env est un choix explicite, pas un
+#     defaut subi.
+#  2. Les versions d'image sont epinglees (verifiees par `docker manifest
+#     inspect`). `latest` rendrait une capture du memoire irreproductible.
+#  3. La retention de Prometheus est bornee en duree ET en taille. Le cadrage
+#     demande de surveiller l'espace disque ; une borne de taille est plus sure
+#     qu'une surveillance, parce qu'elle n'a pas besoin qu'on regarde.
+#
+#  4. Les trois ports publies sont des variables (APP_PORT, PROM_PORT,
+#     GRAFANA_PORT). Un serveur fait tourner autre chose que cette experience :
+#     a la premiere mise en route, le port 8000 etait deja pris par une
+#     application sans rapport. Le §4.3 interdit de toucher aux conteneurs des
+#     autres, donc c'est la pile du memoire qui se decale.
+
+# Les etiquettes `memoire.role` servent a l'injecteur de la phase C : il refuse
+# de toucher tout conteneur qu'il n'a pas cree lui-meme, et ces etiquettes
+# permettent de montrer, a l'inspection, que les conteneurs de la pile ne
+# portent pas la marque des conteneurs d'injection.
+
+name: memoire
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: infra/app/Dockerfile
+    image: memoire-app:${APP_VERSION:-1.0.0}
+    container_name: memoire-app
+    restart: unless-stopped
+    environment:
+      # Ces trois variables DECRIVENT le deploiement courant. Les changer puis
+      # relancer le service est exactement la derive S1 reelle du §5 : elles sont
+      # donc dans .env (non suivi) et non dans un YAML de configs/, sinon
+      # injecter une derive demanderait un commit.
+      APP_VERSION: ${APP_VERSION:-1.0.0}
+      APP_BASE_LATENCY_MS: ${APP_BASE_LATENCY_MS:-25}
+      APP_LATENCY_SPREAD: ${APP_LATENCY_SPREAD:-0.35}
+      # Le plan de controle /chaos reste ouvert par defaut : la pile n'est lancee
+      # que pour l'experience. A mettre a 0 pour une demonstration en lecture seule.
+      APP_CHAOS_ENABLED: ${APP_CHAOS_ENABLED:-1}
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${APP_PORT:-8000}:8000"
+    # L'appli de test subit des anomalies : elle est bornee pour que sa
+    # saturation reste la sienne et n'emporte pas le serveur.
+    cpus: ${APP_CPUS:-1.0}
+    mem_limit: ${APP_MEMORY:-512m}
+    labels:
+      memoire.role: appli_de_test
+    networks:
+      - memoire
+
+  prometheus:
+    image: prom/prometheus:v2.53.2
+    container_name: memoire-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Duree ET taille : voir le point 3 de l'en-tete.
+      - --storage.tsdb.retention.time=${PROM_RETENTION_TIME:-15d}
+      - --storage.tsdb.retention.size=${PROM_RETENTION_SIZE:-4GB}
+      # Necessaire pour recharger la configuration sans redemarrer, et pour que
+      # l'enregistreur de la phase D puisse interroger l'API.
+      - --web.enable-lifecycle
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${PROM_PORT:-9090}:9090"
+    labels:
+      memoire.role: collecte
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - memoire
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: memoire-node-exporter
+    restart: unless-stopped
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host/root
+      # Exclut les systemes de fichiers virtuels de Docker : sans cela, le
+      # panneau « espace disque » compte des dizaines de montages jetables.
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|run/docker/.+)($$|/)
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro,rslave
+    # Aucun port publie : Prometheus l'atteint par le reseau Compose. Publier
+    # 9100 exposerait les metriques de l'hote sans aucune raison, et le port est
+    # souvent deja pris par un node_exporter installe sur la machine.
+    expose:
+      - "9100"
+    labels:
+      memoire.role: collecte
+    networks:
+      - memoire
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: memoire-cadvisor
+    restart: unless-stopped
+    # Le socket Docker est monte en lecture seule : cAdvisor doit lire la liste
+    # des conteneurs, jamais en creer ni en arreter. Le seul composant autorise a
+    # ecrire sur le socket est l'injecteur de la phase C, et il tourne sur l'hote.
+    command:
+      # Seuls les conteneurs nous interessent : sans --docker_only, cAdvisor
+      # publie aussi les cgroups racines (/docker, /kubepods...) et le panneau
+      # « par conteneur » se remplit de lignes qui ne sont pas des conteneurs.
+      - --docker_only=true
+      # Les etiquettes de conteneur deviennent des etiquettes Prometheus : tout
+      # importer fait exploser la cardinalite. Seule `memoire.role` est utile,
+      # elle permet de distinguer la pile des conteneurs d'injection.
+      - --store_container_labels=false
+      - --whitelisted_container_labels=memoire.role
+      - --housekeeping_interval=10s
+      # Metriques desactivees : aucune n'est utilisee par le tableau de bord et
+      # chacune coute de la cardinalite, donc de la retention. Le disque et le
+      # reseau de l'hote sont mesures par node-exporter, pas ici.
+      #
+      # Ce que ces panneaux demandent est le couple (name, cpu) et (name,
+      # memoire). Sous Docker Desktop, cAdvisor n'arrive pas a identifier la
+      # couche lecture-ecriture des conteneurs (le magasin d'images y est
+      # `overlayfs` et non `overlay2`), echoue a les enregistrer et n'expose
+      # alors aucune etiquette `name` : les deux panneaux « par conteneur »
+      # restent vides sur un poste Windows. Desactiver `disk` ne change rien,
+      # la recherche a lieu a l'enregistrement du conteneur. Sur un hote Linux
+      # avec le magasin d'images par defaut, le chemin existe. A verifier au
+      # premier deploiement sur le serveur ; c'est note dans docs/etat_m4.md.
+      - --disable_metrics=disk,advtcp,cpu_topology,cpuset,hugetlb,memory_numa,process,referenced_memory,resctrl,sched,tcp,udp
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+    privileged: true
+    # Sans l'espace de noms cgroup de l'hote, cAdvisor ne voit que son propre
+    # cgroup et n'expose aucune etiquette `name` : les deux panneaux
+    # « par conteneur » restent vides.
+    cgroup: host
+    # Meme raison que node-exporter, et une de plus : cAdvisor tourne privilegie,
+    # son interface n'a rien a faire sur un port publie.
+    expose:
+      - "8080"
+    labels:
+      memoire.role: collecte
+    networks:
+      - memoire
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: memoire-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      # Pas de valeur par defaut : si .env n'est pas renseigne, Grafana refuse de
+      # demarrer, ce qui est preferable a un mot de passe « admin » sur un
+      # serveur accessible.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?renseigner GRAFANA_ADMIN_PASSWORD dans .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Les captures du memoire sont prises sur ce tableau de bord ; il s'ouvre
+      # directement, sans passer par la page d'accueil.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/infrastructure.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    labels:
+      memoire.role: visualisation
+    depends_on:
+      - prometheus
+    networks:
+      - memoire
+
+networks:
+  memoire:
+    name: memoire
+    driver: bridge
+
+volumes:
+  prometheus-data:
+    name: memoire-prometheus-data
+  grafana-data:
+    name: memoire-grafana-data

@@ -1,0 +1,20 @@
+# Chargement des tableaux de bord depuis le depot (livrable M4, phase B).
+#
+# `allowUiUpdates: false` est voulu : un tableau de bord modifie dans l'interface
+# et jamais exporte est un tableau de bord perdu, et une capture du memoire qui ne
+# se reproduit pas est une capture qu'on ne peut pas defendre. Toute modification
+# se fait dans le JSON de `infra/grafana/dashboards/`, puis Grafana est relance.
+
+apiVersion: 1
+
+providers:
+  - name: memoire
+    orgId: 1
+    folder: Memoire
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

@@ -39,6 +39,8 @@ uv run mdrift --help
 | `uv run mdrift hypotheses` | Teste H1, H2 et H3 (Wilcoxon apparie, Holm par famille) | M3 |
 | `uv run mdrift figures-m3` | Figures de comparaison et tableaux du chapitre 6 | M3 |
 | `uv run mdrift figures` | Figures PNG 300 dpi a partir des traces enregistrees | M0 |
+| `docker compose up -d` | Lance la pile de collecte : appli de test, Prometheus, node_exporter, cAdvisor, Grafana | M4 |
+| `python infra/grafana/build_dashboard.py` | Reengendre le JSON du tableau de bord Grafana (ne pas l'editer a la main) | M4 |
 
 Les commandes de calibrage (`smd-screening`, `calibration`, `calibration-k`, `calibrate-drift`)
 n'ecrivent **jamais** dans `results/summary.csv` : elles ont leur propre fichier. Une campagne de mise
