@@ -29,6 +29,20 @@ mdrift = "src.cli:app"
 dev = [
     "pytest>=8.3,<9.0",
     "ruff>=0.8,<0.13",
+    { include-group = "serveur" },
+]
+
+# Briques du mode en ligne et de l'appli de test (M4, M5). Groupe separe du socle
+# ML : les resultats des chapitres 6 se reproduisent sans FastAPI, et une
+# installation qui ne sert qu'a rejouer le SMD n'a pas a tirer un serveur web.
+# `dev` l'inclut pour que les tests de `infra/` tournent en CI.
+serveur = [
+    "fastapi>=0.115,<0.120",
+    "uvicorn>=0.32,<0.36",
+    "prometheus-client>=0.21,<0.24",
+    # Requis par le client de test de FastAPI, et par le lecteur de l'API
+    # Prometheus de la phase D.
+    "httpx>=0.27,<0.29",
 ]
 
 [build-system]

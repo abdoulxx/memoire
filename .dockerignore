@@ -1,0 +1,15 @@
+# Contexte de construction minimal : seuls `infra/` et ce qu'il importe sont
+# necessaires. Les donnees et les resultats ne doivent **jamais** entrer dans une
+# image : `data/` contient les traces du serveur et `results/` les CSV du memoire.
+data/
+results/
+docs/
+notebooks/
+.venv/
+.git/
+.pytest_cache/
+__pycache__/
+*.pyc
+.env
+*.docx
+uv.lock
