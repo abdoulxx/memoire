@@ -533,7 +533,15 @@ def append_summary(row: dict[str, Any], path: Path = SUMMARY_PATH) -> Path:
     if path.is_file():
         existing = pd.read_csv(path)
         existing = existing[existing["run_id"] != row["run_id"]]
-        new = pd.concat([existing, new], ignore_index=True)
+        # Une metrique absente de ce rejeu-ci (`f1_after` n'existe pas sans derive
+        # injectee) donne une colonne entierement vide, dont pandas 2.2 annonce
+        # que le dtype resultant du concat changera. On retire donc ces colonnes
+        # de la ligne ajoutee quand `summary.csv` les porte deja : le resultat
+        # ecrit est le meme, sans dependre d'un comportement annonce comme
+        # changeant. Une colonne vide mais INCONNUE du fichier est conservee,
+        # sinon la ligne perdrait une metrique.
+        vides = [nom for nom in new.columns if nom in existing.columns and new[nom].isna().all()]
+        new = pd.concat([existing, new.drop(columns=vides)], ignore_index=True)
     new = new.sort_values(["source", "machine", "scenario", "strategy", "seed"])
     new.to_csv(path, index=False)
     return path

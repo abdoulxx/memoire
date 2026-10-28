@@ -487,6 +487,45 @@ def scenario_figures(
         )
 
 
+def _drift_positions(
+    machine: str, scenario: str, strategy: str, seed: int
+) -> tuple[int | None, int | None]:
+    """Instant et fin de transition de la derive injectee, lus dans `summary.csv`.
+
+    Renvoie `(None, None)` quand le rejeu n'est pas dans la synthese ou quand le
+    scenario n'injecte rien : une figure sans marque vaut mieux qu'une marque
+    inventee.
+    """
+    import pandas as pd
+
+    from src.evaluation.replay import SUMMARY_PATH
+
+    if not SUMMARY_PATH.is_file():
+        return None, None
+    table = pd.read_csv(SUMMARY_PATH)
+    lignes = table[
+        (table.machine == machine)
+        & (table.scenario == scenario)
+        & (table.strategy == strategy)
+        & (table.seed == seed)
+    ]
+    if lignes.empty or "drift_window" not in lignes.columns:
+        return None, None
+    debut = lignes.drift_window.iloc[0]
+    if pd.isna(debut):
+        return None, None
+    # `drift_end_index` est un indice de POINT, `drift_window` un indice de
+    # FENETRE : il faut convertir, sinon la bande de transition de S2 et S3 est
+    # decalee de la taille de la fenetre. La relation est celle du fenetrage,
+    # verifiee a l'identique sur les 960 rejeux de la campagne.
+    fin_point = lignes.drift_end_index.iloc[0] if "drift_end_index" in lignes.columns else None
+    if fin_point is None or pd.isna(fin_point):
+        return int(debut), None
+    taille = int(lignes.window_size.iloc[0])
+    pas = int(lignes.stride.iloc[0])
+    return int(debut), int((int(fin_point) - taille + 1) // pas)
+
+
 @app.command("figures")
 def figures(
     machine: str = typer.Option("all", help="Nom d'une machine SMD, ou 'all'."),
@@ -525,11 +564,19 @@ def figures(
         base = f"{nom}_{scenario}_{strategy}_seed{seed}"
         titre = f"{nom} — strategie {strategy}, scenario {scenario} (seed {seed})"
 
+        # L'instant de derive n'est pas dans les traces : il appartient au
+        # scenario, donc a la ligne de synthese du rejeu. On le relit la plutot
+        # que de le recalculer, pour que la figure et le tableau du memoire ne
+        # puissent pas se contredire.
+        derive, derive_fin = _drift_positions(nom, scenario, strategy, seed)
+
         scores = plot_scores(
             traces,
             FIGURES_DIR / f"scores_{base}.png",
             title=titre,
             sampling_interval_seconds=intervalle,
+            drift_index=derive,
+            drift_end_index=derive_fin,
         )
         taux = plot_alert_rate_profile(
             traces,
@@ -581,19 +628,119 @@ def _show_campaign_summary(table) -> None:
         typer.echo("Aucun rejeu execute (tout etait deja dans summary.csv).")
         return
     par_machine = table.groupby(["strategy", "machine"], as_index=False).mean(numeric_only=True)
-    resume = par_machine.groupby("strategy", as_index=False).agg(
-        machines=("machine", "nunique"),
-        f1=("f1", "mean"),
-        f1_apres=("f1_after", "mean"),
-        reentrainements=("cost_n_retrains", "mean"),
-        promus=("cost_n_promoted", "mean"),
-        rejetes=("cost_n_rejected", "mean"),
-        secondes_reentrainement=("cost_retrain_seconds", "mean"),
-        confirmations=("drift_n_confirmations", "mean"),
-        promotions_degradantes=("n_promotions_degradantes", "mean"),
+    # Les colonnes dependent du scenario : un rejeu sans derive injectee n'a ni
+    # `f1_after` ni delai de detection de derive. On n'agrege donc que ce qui est
+    # present, au lieu de supposer la campagne toujours identique — c'est ce qui
+    # faisait echouer `--scenarios none` apres les 64 rejeux, une fois les
+    # resultats deja ecrits.
+    voulues = {
+        "f1": "f1",
+        "f1_apres": "f1_after",
+        "reentrainements": "cost_n_retrains",
+        "promus": "cost_n_promoted",
+        "rejetes": "cost_n_rejected",
+        "secondes_reentrainement": "cost_retrain_seconds",
+        "confirmations": "drift_n_confirmations",
+        "promotions_degradantes": "n_promotions_degradantes",
+    }
+    agregats = {"machines": ("machine", "nunique")}
+    agregats.update(
+        {
+            libelle: (colonne, "mean")
+            for libelle, colonne in voulues.items()
+            if colonne in par_machine.columns
+        }
     )
+    resume = par_machine.groupby("strategy", as_index=False).agg(**agregats)
     typer.echo("\nMoyenne par strategie (moyenne par machine d'abord, OBS06) :")
     typer.echo(resume.round(3).to_string(index=False))
+
+
+@app.command("figures-m3")
+def figures_m3(
+    summary_path: str = typer.Option("results/summary.csv", help="Synthese de la campagne."),
+    machine: str = typer.Option(
+        "mediane",
+        help="Machine du F1 glissant. `mediane` = celle dont le F1 apres derive de P "
+        "est le plus proche de la mediane des machines (choix reproductible, "
+        "et non la plus flatteuse).",
+    ),
+    scenarios: str = typer.Option(
+        "s1_soudaine,s4_recurrente",
+        help="Scenarios pour lesquels tracer le F1 glissant.",
+    ),
+    seed: int = typer.Option(42, help="Graine du F1 glissant."),
+    largeur: int = typer.Option(1000, help="Largeur de la fenetre glissante, en fenetres."),
+) -> None:
+    """Produit les figures de resultats du chapitre 6 (livrable M3, phase D).
+
+    Quatre figures d'agregat — cout du reentrainement, F1 de part et d'autre de la
+    derive, arbitrage qualite / cout, effet de K sur la confirmation — plus un F1
+    glissant par scenario demande. Tout est relu depuis `results/` : aucune figure
+    n'est produite par un calcul refait pour l'occasion, et aucune valeur n'est
+    recopiee a la main.
+    """
+    from pathlib import Path
+
+    import pandas as pd
+
+    from src.evaluation.result_figures import (
+        plot_confirmations_contre_k,
+        plot_cout_reentrainement,
+        plot_f1_avant_apres,
+        plot_f1_glissant,
+        plot_qualite_contre_cout,
+    )
+
+    synthese = pd.read_csv(summary_path)
+    injectes = synthese[synthese.scenario != "none"]
+    if injectes.empty:
+        typer.echo("Aucun rejeu avec derive injectee dans la synthese.")
+        raise typer.Exit(code=1)
+
+    sorties: list[Path] = []
+    for tracer in (plot_cout_reentrainement, plot_f1_avant_apres, plot_qualite_contre_cout):
+        sorties.append(tracer(summary_path=summary_path))
+
+    figure_k, mesures_k = plot_confirmations_contre_k()
+    sorties.append(figure_k)
+    typer.echo("Effet de K (point de fonctionnement fige, machines de mise au point) :")
+    typer.echo(
+        mesures_k[
+            [
+                "n_injections",
+                "detections",
+                "confirmations_prematurees",
+                "confirmations_stables",
+                "part_detectee",
+            ]
+        ].to_string()
+    )
+
+    for scenario in [nom.strip() for nom in scenarios.split(",") if nom.strip()]:
+        bloc = injectes[(injectes.scenario == scenario) & (injectes.strategy == "proposed")]
+        if bloc.empty:
+            typer.echo(f"{scenario} : aucun rejeu de la strategie proposee, scenario ignore.")
+            continue
+        if machine == "mediane":
+            par_machine = bloc.groupby("machine").f1_after.mean()
+            choisie = (par_machine - par_machine.median()).abs().idxmin()
+        else:
+            choisie = machine
+        sorties.append(
+            plot_f1_glissant(
+                choisie,
+                scenario,
+                seed=seed,
+                largeur=largeur,
+                summary_path=summary_path,
+            )
+        )
+        typer.echo(f"{scenario} : F1 glissant trace sur {choisie} (graine {seed}).")
+
+    typer.echo("")
+    for chemin in sorties:
+        typer.echo(f"-> {chemin.relative_to(PROJECT_ROOT_DISPLAY)}")
 
 
 @app.command("run")
@@ -889,6 +1036,67 @@ def promotions_command(
     compte["part"] = (compte.degradantes / compte.promotions).round(4)
     typer.echo(compte.to_string(index=False))
     typer.echo(f"\n-> {sortie}")
+
+
+@app.command("hypotheses")
+def hypotheses_command(
+    summary_path: str = typer.Option("results/summary.csv", help="Synthese a analyser."),
+    alpha: float = typer.Option(0.05, help="Risque de premiere espece, apres correction."),
+    scenarios: str = typer.Option("", help="Filtre. Vide = tous les scenarios injectes."),
+    path: str = typer.Option("", help="Sortie. Vide = results/hypotheses.csv."),
+    groupes: bool = typer.Option(True, help="Afficher aussi les moyennes par groupe SMD."),
+) -> None:
+    """Teste les trois hypotheses du memoire (Wilcoxon apparie par machine).
+
+    Le plan de tests est **declare dans le code** (`src/evaluation/hypotheses.py`,
+    dictionnaire `PLAN`) et non choisi apres avoir vu les resultats : metriques de
+    chaque hypothese, sens attendu, correction de Holm sur la famille. L'unite
+    d'observation est la machine, moyennee sur ses graines (OBS06), et chaque
+    scenario est teste separement avant la ligne d'ensemble.
+    """
+    from pathlib import Path
+
+    import pandas as pd
+
+    from src.evaluation.hypotheses import HYPOTHESES_PATH, PLAN, ecrire, par_groupe, tester
+
+    filtres = [nom.strip() for nom in scenarios.split(",") if nom.strip()]
+    resultats = tester(summary_path, alpha=alpha, scenarios=filtres or None)
+    if resultats.empty:
+        typer.echo("Aucun rejeu avec derive injectee dans la synthese.")
+        raise typer.Exit(code=1)
+
+    for hypothese, plan in PLAN.items():
+        bloc = resultats[resultats.hypothese == hypothese]
+        if bloc.empty:
+            continue
+        typer.echo("")
+        typer.echo(f"=== {hypothese} — {plan['question']}")
+        typer.echo(f"    P contre {plan['reference']}, n = {int(bloc.n_paires.max())} machines")
+        typer.echo(
+            f"{'scenario':<16}{'metrique':<28}{'P':>10}{'ref':>10}"
+            f"{'ecart':>10}{'p':>10}{'p Holm':>10}  verdict"
+        )
+        for ligne in bloc.itertuples():
+            p_brut = "-" if pd.isna(ligne.p_value) else f"{ligne.p_value:.4f}"
+            p_holm = "-" if pd.isna(ligne.p_holm) else f"{ligne.p_holm:.4f}"
+            typer.echo(
+                f"{ligne.scenario:<16}{ligne.metrique:<28}"
+                f"{ligne.mediane_strategie:>10.3f}{ligne.mediane_reference:>10.3f}"
+                f"{ligne.mediane_ecart:>10.3f}{p_brut:>10}{p_holm:>10}  {ligne.verdict}"
+            )
+
+    if groupes:
+        table_groupes = par_groupe(summary_path)
+        if not table_groupes.empty:
+            typer.echo("")
+            typer.echo("=== Moyennes par groupe SMD (les machines d'un groupe sont correlees)")
+            typer.echo(table_groupes.to_string(index=False))
+
+    sortie = HYPOTHESES_PATH if not path else Path(path)
+    ecrire(resultats, sortie)
+    typer.echo("")
+    typer.echo(f"-> {sortie}")
 
 
 if __name__ == "__main__":

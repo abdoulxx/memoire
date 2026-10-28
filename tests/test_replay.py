@@ -273,6 +273,55 @@ def test_summary_ne_duplique_pas_un_rejeu(tmp_path) -> None:
     assert len(pd.read_csv(path)) == 2
 
 
+def test_summary_accepte_une_metrique_absente_sans_avertissement(tmp_path) -> None:
+    """Une colonne vide ne doit ni avertir ni disparaitre du fichier.
+
+    Un rejeu sans derive injectee n'a pas de `f1_after`. La ligne s'ajoute donc
+    avec une colonne entierement vide, cas que pandas 2.2 signale par un
+    `FutureWarning` sur le dtype du concat. Le test porte sur les deux choses
+    qu'on exige : aucun avertissement, et la colonne toujours presente avec les
+    valeurs des rejeux qui, eux, l'avaient.
+    """
+    import warnings
+
+    import pandas as pd
+
+    path = tmp_path / "summary.csv"
+    append_summary(
+        {
+            "run_id": "avec",
+            "source": "smd",
+            "machine": "m",
+            "scenario": "s1",
+            "strategy": "p",
+            "seed": 42,
+            "f1": 0.4,
+            "f1_after": 0.5,
+        },
+        path=path,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        append_summary(
+            {
+                "run_id": "sans",
+                "source": "smd",
+                "machine": "m",
+                "scenario": "none",
+                "strategy": "p",
+                "seed": 42,
+                "f1": 0.4,
+                "f1_after": None,
+            },
+            path=path,
+        )
+
+    table = pd.read_csv(path).set_index("run_id")
+    assert "f1_after" in table.columns
+    assert table.loc["avec", "f1_after"] == pytest.approx(0.5)
+    assert pd.isna(table.loc["sans", "f1_after"])
+
+
 def test_b0_refuse_de_reentrainer() -> None:
     """B0 ne doit meme pas pouvoir repondre a la question : l'erreur est explicite."""
     with pytest.raises(RuntimeError, match="jamais"):
