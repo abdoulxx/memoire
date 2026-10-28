@@ -8,6 +8,8 @@
 | M0+ — Mesures preparatoires : derive naturelle a 28 machines, regles de P | 2026-10-22 | 2026-10-22 | termine |
 | M0++ — Calibrage des etapes 3 et 4 sur le perimetre de mise au point | 2026-10-26 | 2026-10-26 | termine |
 | M1 — Injection de derive S1 a S4, calibrage de l'amplitude, figures | 2026-10-26 | 2026-10-26 | termine |
+| M2 — Surveillance de derive, strategies B0 / B1 / P / A1, harnais de rejeu | 2026-10-26 | 2026-10-27 | termine |
+| M3 — Campagne 12 machines x S1-S4 x 5 graines, tests H1-H3, figures et tableaux | 2026-10-28 | 2026-10-28 | termine |
 
 ## 2026-10-22
 - Initialisation du depot : arborescence, `pyproject.toml`, `uv.lock`, `ruff`, `pytest`, CLI `mdrift`.
@@ -291,10 +293,91 @@ Etat du code : **157 tests passent**, `ruff check` et `ruff format --check` sans
 fichiers. Parametres de derive et de strategies figes ; rien n'a encore ete execute sur les 12
 machines d'evaluation.
 
-## Prochaine etape : M3
-Campagne complete sur le perimetre d'evaluation : 12 machines x 4 scenarios x 5 graines x 4
-strategies, a configuration **figee** (D29, D30). Puis les tableaux et figures du chapitre 6, le test
-de Wilcoxon apparie sur les graines pour H1 et H2, et le comptage des promotions degradantes pour H3.
-L'etude de la derive naturelle (scenario `none`, les 13 machines instables de mise au point, quatre
-strategies) est disponible et reste a lancer : c'est elle qui donne les fausses confirmations de
-derive du §7, en complement des 3 machines stables sur lesquelles le calibrage a pu s'appuyer.
+## 2026-10-28 — M3 : campagne complete sur les 12 machines d'evaluation
+Debut 28/10 a 16h55, fin 28/10 a 19h30. Cinq phases, une a la fois : la campagne mesure des
+secondes CPU qui sont des metriques du §7, deux executions simultanees gonfleraient les deux
+mesures. Push a la fin de chaque phase.
+
+- **Phase A — campagne principale** (`results/summary.csv`, 18h13) : **960 rejeux** = 12 machines
+  d'evaluation x 4 scenarios (S1-S4) x 4 strategies x 5 graines, 24 104 fenetres par flux en
+  moyenne, **1,25 h de calcul cumule**. Configuration **figee avant la premiere execution**
+  (D29, D30) ; aucun parametre n'a bouge pendant la campagne.
+- **Phase B — derive naturelle** (`results/summary_m3_derive_naturelle.csv`, 18h28) : scenario
+  `none`, sans injection, **les 28 machines** du SMD x 4 strategies, graine 42, 112 rejeux, 0,17 h.
+  Le perimetre a ete **etendu** des 13 machines instables de mise au point aux 28 machines, parce que
+  12 des 15 machines stables sont des machines d'evaluation : s'y limiter aurait laisse 3 machines et
+  rendu la metrique de specificite du §7 inevaluable. D17 n'est pas viole — une confirmation de
+  derive ne lit aucune etiquette, et aucun parametre n'a bouge ni ne bougera apres cette mesure
+  (D33).
+- **Phase C — tests statistiques** (`results/hypotheses.csv`, 18h40) : Wilcoxon apparie bilateral
+  sur les 48 paires machine x scenario, **moyenne des graines machine par machine d'abord** (OBS06),
+  Holm **par famille** d'hypothese, abstention declaree sous 5 ecarts non nuls (D31).
+- **Phase D — figures et tableaux** (19h05) : `mdrift figures-m3` produit les **6 figures a 300 dpi**
+  de `docs/figures/` et `docs/tableaux_chapitre6.md` (5 tableaux, 13 metriques du §7). Tout est relu
+  depuis `results/` ; aucun nombre n'est recopie a la main (D34).
+- **Phase E — documentation** (19h30) : D31 a D34 dans `docs/decisions.md`, cette entree,
+  suppression du fichier de reprise `docs/etat_m3.md` dont le contenu definitif est ici.
+
+### Les trois verdicts, tels qu'ils doivent etre ecrits au chapitre 6
+
+- **H2 est verifiee, et c'est le resultat central** : P reentraine moins que B1 **48 fois sur 48**,
+  facteur **12** en nombre (1,38 contre 16,25 par rejeu) comme en secondes CPU (0,33 contre 3,94),
+  p < 0,0001 apres Holm, pour un F1 **indiscernable** (0,265 contre 0,252 ; p Holm 0,88). Revers a
+  ecrire : B1 produit **deux fois moins** de fausses alertes (1,31 contre 2,64 par heure, 42 paires
+  sur 48). Reentrainer toutes les *T* minutes recalibre le seuil en continu, ce qui resserre
+  mecaniquement le taux d'alertes. **P domine B1 sur le cout, pas sur toutes les dimensions de la
+  qualite.**
+- **H1 n'est pas verifiee au sens large** : un seul critere sur cinq tient — fausses alertes
+  **-18 %** contre le modele fige (2,64 contre 3,21 par heure, p Holm 0,0027) — et un autre part
+  **a l'envers** : rappel par evenement **plus faible** que B0 (0,748 contre 0,773 ; 2 paires
+  gagnantes contre 16 ; p Holm 0,0027). F1, F1 apres derive et temps de recuperation ne montrent
+  aucune difference detectable. Le reentrainement declenche par derive **echange du rappel contre de
+  la precision** plutot qu'il n'ameliore la detection. Ce resultat ne doit pas etre embelli : c'est
+  la limite principale a porter au 6.3.3 et au 7.3.
+- **H3 est verifiee sur la fiabilite, avec un cout mesure** : P n'a **jamais** plus de promotions
+  degradantes que A1 (0 cas sur les 6 paires ou les deux different, p Holm 0,0235) et promeut un
+  quart de fois en moins (1,15 contre 1,54 ; p Holm 0,0001, 23 paires sur 23). Mais P perd **1,2
+  point de F1** (p Holm 0,0124) et **1,6 point de F1 apres derive** (p Holm 0,0047). La validation
+  n'est pas gratuite sous derive injectee — alors que sur les 15 machines stables de la phase B, le
+  meme garde-fou transforme 3 promotions degradantes en **0 sans aucun cout en F1**. L'arbitrage
+  depend du regime, et **les deux lectures doivent figurer**.
+
+### Specificite de la surveillance : le chiffre que la phase B apporte
+
+**0 fausse confirmation sur les 15 machines stables**, contre 13 sur 15 a K = 30 (D19), **sans que
+le moniteur devienne muet** : il confirme sur **7 des 13** machines dont le criblage avait montre
+qu'elles derivent reellement entre leur moitie train et leur moitie test (OBS03). C'est ce couple de
+chiffres qui rend l'etape de confirmation evaluable : un moniteur qui confirmerait tout le temps
+aurait un excellent delai de detection et ne vaudrait rien.
+
+Sur ces machines stables, P, A1 et B0 sont **identiques au chiffre pres** (F1 0,333 ; 0,58 fausse
+alerte/h) parce que P n'y reentraine jamais, tandis que B1 y reentraine **16,2 fois par machine**,
+y **perd** du F1 (0,295) et y alerte **davantage** a tort (0,87/h). Sur une infrastructure qui ne
+derive pas, le cout de la discipline periodique est **negatif, pas neutre** — l'argument le plus
+direct en faveur du declenchement par derive, et il ne demande aucune etiquette.
+
+### Deux defauts corriges, tous deux dans la facon de rendre compte
+
+- **La direction d'un test de Wilcoxon ne se lit pas sur la mediane des ecarts.** Des que plus de la
+  moitie des paires sont a egalite — le cas normal pour `n_promotions_degradantes`, nulle sur 42
+  paires sur 48 —, la mediane vaut 0 alors que le test, qui ignore les ex aequo, mesure une direction
+  nette. H3 s'affichait `contraire a l'attendu` alors que P fait **mieux** que A1 : le tableau
+  annoncait l'inverse du test, sur l'hypothese qui porte la contribution du memoire. La direction est
+  desormais lue sur le signe de la **somme des rangs signes** et le compte `+/-` est publie (D31).
+- **La courbe de la strategie proposee etait invisible** sur la figure centrale du chapitre 6 : sur un
+  meme flux, P trace la meme courbe que A1 partout ou la validation n'a rien rejete, et colle a B0
+  partout ou elle n'a pas reentraine. Les traits sont empiles par largeur decroissante et une note
+  donne la convention (D34).
+
+Etat du code : **175 tests passent**, `ruff check` et `ruff format --check` sans remarque sur 61
+fichiers. Les resultats de M3 sont complets ; `results/summary.csv`, `results/hypotheses.csv`,
+`results/summary_m3_derive_naturelle.csv`, `docs/tableaux_chapitre6.md` et les 6 figures de
+`docs/figures/` sont les sources du chapitre 6.
+
+## Prochaine etape : M4
+Infrastructure sur le serveur personnel : Docker Compose (appli de test FastAPI, Prometheus,
+node_exporter, cAdvisor, Grafana), injecteur de pannes en conteneurs dedies avec limites Docker et
+arret d'urgence `make stop-chaos`, enregistrement des sessions en Parquet avec leurs labels
+(`data/labels/<run_id>.csv` et `<run_id>_drift.csv`). Les regles du §4.3 sont non negociables :
+aucune injection sur un conteneur de production, aucun secret, IP, nom d'hote ou domaine dans le
+depot, les resultats ou les captures.

@@ -36,6 +36,8 @@ uv run mdrift --help
 | `uv run mdrift campaign` | Enchaine machines x scenarios x strategies x graines, reprenable | M2 |
 | `uv run mdrift calibrate-drift` | Balaie la grille des parametres de derive sur le perimetre de mise au point | M2 |
 | `uv run mdrift promotions` | Recalcule les promotions degradantes hors ligne depuis les traces | M2 |
+| `uv run mdrift hypotheses` | Teste H1, H2 et H3 (Wilcoxon apparie, Holm par famille) | M3 |
+| `uv run mdrift figures-m3` | Figures de comparaison et tableaux du chapitre 6 | M3 |
 | `uv run mdrift figures` | Figures PNG 300 dpi a partir des traces enregistrees | M0 |
 
 Les commandes de calibrage (`smd-screening`, `calibration`, `calibration-k`, `calibrate-drift`)

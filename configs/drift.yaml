@@ -11,7 +11,10 @@
 # (`results/calibration_m2_dev.csv`, `mdrift calibrate-drift`). Le point retenu
 # est le plus sensible parmi ceux qui ne produisent AUCUN faux signal sur les
 # machines stables : 51 detections sur 64 injections (79,7 %), 0 faux signal sur
-# les 15 traces stables, delai median de confirmation de 2 431 fenetres.
+# les 15 traces stables -- soit les 3 machines stables de la mise au point x 5
+# scenarios, a ne pas confondre avec les 15 machines stables du criblage, sur
+# lesquelles la specificite est mesuree a M3 et jamais reglee (D17) --, delai
+# median de confirmation de 2 431 fenetres.
 # Plus aucune de ces valeurs ne doit bouger : la campagne d'evaluation (M3)
 # porte sur 12 machines dont les etiquettes n'ont jamais ete regardees (D17).
 
