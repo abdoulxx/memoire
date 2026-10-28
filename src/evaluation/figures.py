@@ -41,10 +41,16 @@ def plot_scores(
     title: str | None = None,
     sampling_interval_seconds: int = 60,
     window: tuple[int, int] | None = None,
+    drift_index: int | None = None,
+    drift_end_index: int | None = None,
 ) -> Path:
     """Score d'anomalie dans le temps, avec seuil, anomalies etiquetees et alertes.
 
     `window` restreint la figure a une plage de positions, pour une vue zoomee.
+    `drift_index` marque l'instant de derive injectee, et `drift_end_index` la fin
+    de la transition pour S2 et S3 : sans ce reperage, la figure demandee au §11
+    montre un changement de regime sans dire quand il a ete provoque, et le
+    lecteur ne peut pas distinguer l'effet de la derive de celui des anomalies.
     """
     traces = np.load(Path(traces_path))
     scores = traces["scores"]
@@ -97,6 +103,24 @@ def plot_scores(
 
     # Entree de legende pour les bandes d'anomalies.
     axes.axvspan(np.nan, np.nan, color="#d62728", alpha=0.16, label="Anomalie etiquetee")
+
+    if drift_index is not None:
+        heure_derive = drift_index * sampling_interval_seconds / 3600.0
+        if hours[0] <= heure_derive <= hours[-1]:
+            axes.axvline(heure_derive, color="black", linestyle="--", linewidth=1.0)
+            if drift_end_index is not None and drift_end_index > drift_index:
+                axes.axvspan(
+                    heure_derive,
+                    drift_end_index * sampling_interval_seconds / 3600.0,
+                    color="black",
+                    alpha=0.07,
+                    linewidth=0,
+                    label="transition de la derive",
+                )
+            else:
+                axes.axvline(
+                    np.nan, color="black", linestyle="--", linewidth=1.0, label="debut de la derive"
+                )
 
     axes.set_xlabel("Temps depuis le debut du flux (heures)")
     axes.set_ylabel("Score d'anomalie")

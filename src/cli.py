@@ -1070,20 +1070,31 @@ def hypotheses_command(
         bloc = resultats[resultats.hypothese == hypothese]
         if bloc.empty:
             continue
+        par_scenario = bloc[bloc.scenario != "tous"]
+        machines = int(par_scenario.n_paires.max()) if not par_scenario.empty else 0
         typer.echo("")
         typer.echo(f"=== {hypothese} — {plan['question']}")
-        typer.echo(f"    P contre {plan['reference']}, n = {int(bloc.n_paires.max())} machines")
         typer.echo(
-            f"{'scenario':<16}{'metrique':<28}{'P':>10}{'ref':>10}"
-            f"{'ecart':>10}{'p':>10}{'p Holm':>10}  verdict"
+            f"    P contre {plan['reference']} — {machines} machines par scenario, "
+            f"{int(bloc.n_paires.max())} paires sur la ligne `tous`"
+        )
+        # `med. P` et `med. ref` sont des medianes de niveaux, `med. ecart` la
+        # mediane des ecarts apparies : les trois ne se deduisent pas l'une de
+        # l'autre et peuvent meme ne pas avoir le meme signe. `+/-` compte les
+        # machines ou P depasse la reference et celles ou il est en dessous ; c'est
+        # ce comptage, et non la mediane, qui porte la direction du test.
+        typer.echo(
+            f"{'scenario':<16}{'metrique':<28}{'med. P':>10}{'med. ref':>10}"
+            f"{'med. ecart':>12}{'+/-':>9}{'p':>9}{'p Holm':>9}  verdict"
         )
         for ligne in bloc.itertuples():
             p_brut = "-" if pd.isna(ligne.p_value) else f"{ligne.p_value:.4f}"
             p_holm = "-" if pd.isna(ligne.p_holm) else f"{ligne.p_holm:.4f}"
+            signes = f"{ligne.n_ecarts_positifs}/{ligne.n_ecarts_negatifs}"
             typer.echo(
                 f"{ligne.scenario:<16}{ligne.metrique:<28}"
                 f"{ligne.mediane_strategie:>10.3f}{ligne.mediane_reference:>10.3f}"
-                f"{ligne.mediane_ecart:>10.3f}{p_brut:>10}{p_holm:>10}  {ligne.verdict}"
+                f"{ligne.mediane_ecart:>12.4f}{signes:>9}{p_brut:>9}{p_holm:>9}  {ligne.verdict}"
             )
 
     if groupes:

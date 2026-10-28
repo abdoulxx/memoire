@@ -24,8 +24,8 @@ Fenetre de travail autonome accordee : du **28/10/2026 16h55** au **29/10/2026 0
 |---|---|---|
 | A | Campagne principale S1-S4 : 12 machines d'evaluation x 4 scenarios x 4 strategies x 5 graines = **960 rejeux** | **terminee** le 28/10 a 18h13 (960/960) |
 | B | Derive naturelle : scenario `none`, 13 machines instables de mise au point, 4 strategies -> fausses confirmations du §7, perimetre etendu aux 28 machines | **terminee** le 28/10 a 18h28 (112 rejeux) |
-| C | Tests statistiques H1 / H2 / H3 (Wilcoxon apparie, moyenne par machine d'abord — OBS06) | **en cours** |
-| D | Figures 300 dpi et tableaux du chapitre 6 | a faire |
+| C | Tests statistiques H1 / H2 / H3 (Wilcoxon apparie, moyenne par machine d'abord — OBS06) | **terminee** le 28/10 a 18h40 (H2 verifiee, H1 non, H3 avec un cout) |
+| D | Figures 300 dpi et tableaux du chapitre 6 | **en cours** |
 | E | D31+ dans `decisions.md`, entree M3 de `journal.md`, suppression de ce fichier | a faire |
 
 ## Resultats de la phase A (lecture brute, avant les tests statistiques)
@@ -149,6 +149,115 @@ uv run mdrift campaign --dataset-config datasets/smd_dev.yaml \
 
 (perimetre de mise au point assume : les fausses confirmations se comptent sur les
 machines **instables**, qui sont toutes du cote mise au point — D29, limite (i).)
+
+## Resultats de la phase C (tests statistiques H1 / H2 / H3)
+
+`mdrift hypotheses` -> `results/hypotheses.csv`. Wilcoxon apparie bilateral,
+**moyenne par machine d'abord** (OBS06 : les 5 graines d'une machine sont 5 tirages
+de *t*<sub>d</sub> sur le meme flux, pas 5 observations independantes), correction de
+Holm **a l'interieur de chaque famille** d'hypothese, abstention declaree
+(`indecidable`) sous 5 ecarts non nuls. 12 paires machine x scenario par scenario,
+**48 sur la ligne `tous`** — c'est cette ligne qui est rapportee ici.
+
+Les tableaux donnent **mediane et moyenne**, parce que les deux ne disent pas
+toujours la meme chose : sur `f1_after` contre B1, la mediane met P devant
+(0,312 contre 0,298) et la moyenne le met derriere (0,309 contre 0,324). Le test,
+lui, porte sur les differences appariees et conclut a l'absence de difference
+detectable — c'est la seule lecture qui vaut. Citer une seule des deux statistiques
+dans le memoire laisserait croire a un ecart qui n'est pas significatif.
+La colonne `+/-` compte les paires ou P est au-dessus / en dessous, ex aequo exclus.
+
+### H1 — P contre B0 fige
+
+| Metrique | med. P | med. B0 | moy. P | moy. B0 | +/- | p Holm | Verdict |
+|---|---|---|---|---|---|---|---|
+| Fausses alertes / h | 2,277 | 2,968 | 2,641 | 3,212 | 7/29 | **0,0027** | conforme |
+| F1 | 0,258 | 0,268 | 0,265 | 0,265 | 20/16 | 1,0000 | pas de difference detectable |
+| F1 apres derive | 0,312 | 0,325 | 0,309 | 0,306 | 20/16 | 1,0000 | pas de difference detectable |
+| Rappel par evenement | 0,800 | 0,800 | 0,748 | 0,774 | 2/16 | **0,0027** | **contraire a l'attendu** |
+| Temps de recuperation (min) | 2592,5 | 2592,5 | 2413,0 | 2561,2 | 4/5 | 1,0000 | pas de difference detectable |
+
+Un seul des cinq criteres de H1 est verifie, et un autre l'est **a l'envers** :
+P detecte **moins** d'evenements que le modele fige (rappel par evenement moyen
+0,748 contre 0,774, soit 2,5 points perdus ; 30 des 48 paires sont a egalite, mais
+sur les 18 autres P perd 16 fois). Le gain est ailleurs : **18 % de fausses alertes
+en moins** en moyenne (2,641 contre 3,212 par heure), significatif apres Holm.
+
+Autrement dit, sur le SMD avec derive injectee, le reentrainement declenche par
+derive confirmee **echange du rappel contre de la precision** plutot qu'il
+n'ameliore la detection. **H1 doit etre rapportee comme non verifiee au sens
+large**, et ce resultat ne doit pas etre embelli : c'est la limite principale a
+porter au chapitre 6 (et au 7.3).
+
+### H2 — P contre B1 periodique
+
+| Metrique | med. P | med. B1 | moy. P | moy. B1 | +/- | p Holm | Verdict |
+|---|---|---|---|---|---|---|---|
+| Nombre de reentrainements | 1,40 | 16,00 | 1,38 | 16,25 | 0/48 | **0,0000** | conforme |
+| Secondes CPU de reentrainement | 0,330 | 3,832 | 0,333 | 3,941 | 0/48 | **0,0000** | conforme |
+| F1 | 0,258 | 0,223 | 0,265 | 0,252 | 24/24 | 0,8843 | pas de difference detectable |
+| F1 apres derive | 0,312 | 0,298 | 0,309 | 0,324 | 23/25 | 0,8843 | pas de difference detectable |
+| Fausses alertes / h | 2,277 | 1,300 | 2,641 | 1,309 | 42/6 | **0,0000** | difference detectee (superieur) |
+
+**H2 est verifiee sur les deux criteres de cout, sans aucune exception** : sur les
+48 paires, P reentraine moins que B1 **48 fois sur 48**, soit un facteur **12** en
+nombre de reentrainements comme en secondes CPU, pour un F1 statistiquement
+indiscernable. C'est le resultat central du memoire, et c'est le seul qui soit a
+la fois significatif, unanime et conforme a ce qui etait attendu.
+
+Le revers doit etre ecrit : B1 produit **deux fois moins** de fausses alertes que
+P (1,309 contre 2,641 par heure en moyenne, 42 paires sur 48, tres significatif).
+Reentrainer toutes les *T* minutes recalibre le seuil en continu sur des donnees
+recentes, ce qui resserre mecaniquement le taux d'alertes — au prix de 12 fois plus
+de calcul. Conclusion honnete : **P domine B1 sur le cout, pas sur toutes les
+dimensions de la qualite.**
+
+### H3 — P contre A1 (meme strategie, sans l'etape de validation)
+
+| Metrique | med. P | med. A1 | moy. P | moy. A1 | +/- | p Holm | Verdict |
+|---|---|---|---|---|---|---|---|
+| Promotions degradantes | 0,000 | 0,000 | 0,121 | 0,158 | 0/6 | **0,0235** | conforme |
+| Promotions | 1,000 | 1,500 | 1,150 | 1,542 | 0/23 | **0,0001** | conforme |
+| F1 | 0,258 | 0,260 | 0,265 | 0,277 | 6/17 | **0,0124** | difference detectee (inferieur) |
+| F1 apres derive | 0,312 | 0,313 | 0,309 | 0,326 | 6/17 | **0,0047** | difference detectee (inferieur) |
+
+Le garde-fou fait ce qu'on lui demande : sur les 6 paires ou les deux strategies
+different sur les promotions degradantes, **P en a moins dans les 6 cas** et
+jamais plus, en rejetant un quart des promotions (1,15 contre 1,54 par rejeu en
+moyenne). Les comptes sont faibles en valeur absolue (0,12 promotion degradante
+par rejeu) : 42 des 48 paires sont a egalite a zero, et c'est precisement pour cela
+que la direction ne pouvait pas etre lue sur une mediane (voir le defaut corrige
+ci-dessous).
+
+Et il le paie : P perd **1,2 point de F1** et **1,6 point de F1 apres derive**
+contre A1 (significatif apres Holm, 17 paires sur 23 non nulles). C'est le
+compromis a enoncer tel quel : **la validation n'est pas gratuite**, elle echange
+un peu de performance moyenne contre la garantie de ne pas mettre en service un
+modele pire que le precedent.
+
+A mettre en regard de la phase B : sur les 15 machines stables, le meme garde-fou
+transformait 3 promotions degradantes en 0 **sans aucun cout en F1** (P = A1 = B0
+au chiffre pres, puisque P n'y reentraine jamais). L'arbitrage depend donc du
+regime — cout nul quand il n'y a rien a faire, cout reel sous derive injectee — et
+**les deux lectures doivent figurer** au chapitre 6.
+
+### Defaut corrige — la direction d'un test de Wilcoxon
+
+La premiere execution lisait le sens de l'ecart sur la **mediane des differences
+appariees**. Des que plus de la moitie des machines sont a egalite — le cas normal
+pour `n_promotions_degradantes`, nulle sur 42 paires sur 48 —, cette mediane vaut 0
+alors que Wilcoxon, qui **ignore les ex aequo**, mesure une direction nette. H3
+s'affichait donc `contraire a l'attendu` (p Holm 0,0235) alors que P a **moins** de
+promotions degradantes que A1 : le tableau annoncait l'inverse de ce que le test
+avait mesure, sur l'hypothese qui porte la contribution du memoire.
+
+La direction est maintenant lue sur le signe de la **somme des rangs signes**,
+c'est-a-dire la statistique du test elle-meme, et le tableau affiche en clair le
+compte `+/-` des ecarts non nuls pour qu'elle soit verifiable a l'oeil. Un test de
+non-regression fixe ce comportement (`tests/test_hypotheses.py`) : 20 machines dont
+9 seulement a ecart non nul — il faut au moins 6 ecarts non nuls pour que Wilcoxon
+puisse descendre sous p = 0,05, et en meme temps une majorite d'ex aequo pour que
+la mediane soit nulle ; avec 12 machines les deux conditions sont incompatibles.
 
 ## Dette technique relevee pendant M3
 
