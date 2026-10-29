@@ -41,6 +41,10 @@ uv run mdrift --help
 | `uv run mdrift figures` | Figures PNG 300 dpi a partir des traces enregistrees | M0 |
 | `docker compose up -d` | Lance la pile de collecte : appli de test, Prometheus, node_exporter, cAdvisor, Grafana | M4 |
 | `python infra/grafana/build_dashboard.py` | Reengendre le JSON du tableau de bord Grafana (ne pas l'editer a la main) | M4 |
+| `uv run mdrift chaos <type>` | Injecte une anomalie bornee et l'horodate dans `data/labels/` | M4 |
+| `uv run mdrift chaos-list` | Liste les conteneurs d'injection en cours | M4 |
+| `make stop-chaos` | Arret d'urgence : tue toute injection en cours (§4.3) | M4 |
+| `uv run mdrift drift-note <type>` | Horodate une derive reelle (deploiement, changement de ressources) | M4 |
 
 Les commandes de calibrage (`smd-screening`, `calibration`, `calibration-k`, `calibrate-drift`)
 n'ecrivent **jamais** dans `results/summary.csv` : elles ont leur propre fichier. Une campagne de mise

@@ -1113,5 +1113,135 @@ def hypotheses_command(
     typer.echo(f"-> {sortie}")
 
 
+# --- Injection d'anomalies sur le serveur (livrable M4, phase C) -------------
+# Les garde-fous du §4.3 vivent dans `infra/injector/injector.py` et non ici :
+# le CLI ne doit etre qu'une facon de les appeler, jamais une facon de les
+# contourner. Imports tardifs, comme partout dans ce fichier, pour que
+# `mdrift --help` ne charge ni Docker ni httpx.
+
+
+def _injecteur(config: str, avec_appli: bool = True):
+    """Construit l'injecteur depuis `configs/injection.yaml`."""
+    from infra.injector.app_client import ClientAppliHttp
+    from infra.injector.docker_cli import DockerCli
+    from infra.injector.injector import Injecteur, Reglages
+
+    reglages = Reglages.depuis_config(load_config(config), PROJECT_ROOT_DISPLAY)
+    appli = ClientAppliHttp(reglages.url_appli) if avec_appli else None
+    return Injecteur(
+        reglages=reglages,
+        docker=DockerCli(),
+        appli=appli,
+        racine=PROJECT_ROOT_DISPLAY,
+    )
+
+
+@app.command("chaos")
+def chaos_command(
+    type_: str = typer.Argument(
+        ..., metavar="TYPE", help="pic_cpu, fuite_memoire, latence, erreurs, saturation."
+    ),
+    intensite: float = typer.Option(
+        None, "--intensite", help="Defaut : celui du type dans la configuration."
+    ),
+    duree: float = typer.Option(None, "--duree", help="Duree en secondes. Defaut : celle du type."),
+    run_id: str = typer.Option(
+        None, "--run-id", help="Si fourni, l'anomalie est etiquetee dans data/labels/."
+    ),
+    config: str = typer.Option("injection.yaml", help="Configuration des injections."),
+) -> None:
+    """Injecte une anomalie sur l'appli de test, attend sa fin, et l'etiquette.
+
+    La commande est bloquante : elle rend la main quand l'injection est finie,
+    et c'est a ce moment que l'etiquette est ecrite, avec la duree reellement
+    subie. Ctrl+C arrete l'injection et etiquette la duree atteinte (§4.2).
+    """
+    from infra.injector.injector import RefusDeSecurite
+    from infra.injector.labels import horodatage
+
+    injecteur = _injecteur(config)
+    try:
+        anomalie = injecteur.injecter(type_, intensite, duree, run_id)
+    except RefusDeSecurite as refus:
+        typer.echo(f"Refus : {refus}", err=True)
+        raise typer.Exit(code=2) from refus
+    # Les memes horodatages que le fichier d'etiquettes, et non les flottants :
+    # c'est cette forme que l'API de Prometheus accepte telle quelle.
+    typer.echo(
+        f"{anomalie.type} intensite={anomalie.intensite:g} "
+        f"duree={anomalie.duree_s:.0f}s "
+        f"{horodatage(anomalie.debut_ts)} -> {horodatage(anomalie.fin_ts)}"
+    )
+    if run_id:
+        typer.echo(f"-> data/labels/{run_id}.csv")
+    else:
+        typer.echo("Aucun --run-id : l'anomalie n'a pas ete etiquetee.")
+
+
+@app.command("chaos-list")
+def chaos_list(
+    config: str = typer.Option("injection.yaml", help="Configuration des injections."),
+) -> None:
+    """Liste les conteneurs d'injection en cours."""
+    injecteur = _injecteur(config, avec_appli=False)
+    noms = injecteur.lister()
+    if not noms:
+        typer.echo("Aucune injection par conteneur en cours.")
+        return
+    for nom in noms:
+        typer.echo(nom)
+
+
+@app.command("chaos-stop")
+def chaos_stop(
+    nom: str = typer.Option(None, "--nom", help="Un seul conteneur. Par defaut, tous."),
+    config: str = typer.Option("injection.yaml", help="Configuration des injections."),
+) -> None:
+    """Arret d'urgence : arrete les injections en cours (§4.3, `make stop-chaos`).
+
+    Sans `--nom`, arrete tous les conteneurs d'injection et remet le plan de
+    controle de l'appli de test a zero. L'injecteur refuse tout conteneur qui ne
+    porte pas ses deux marques, y compris pour un arret.
+    """
+    from infra.injector.injector import RefusDeSecurite
+
+    injecteur = _injecteur(config)
+    try:
+        if nom:
+            injecteur.arreter(nom)
+            typer.echo(f"Arrete : {nom}")
+            return
+        resultat = injecteur.arreter_tout()
+    except RefusDeSecurite as refus:
+        typer.echo(f"Refus : {refus}", err=True)
+        raise typer.Exit(code=2) from refus
+    for arrete in resultat.conteneurs:
+        typer.echo(f"Arrete : {arrete}")
+    typer.echo(f"{len(resultat.conteneurs)} conteneur(s) arrete(s).")
+    typer.echo(f"Plan de controle de l'appli de test : {resultat.plan_de_controle}")
+
+
+@app.command("drift-note")
+def drift_note(
+    type_: str = typer.Argument(..., metavar="TYPE", help="deploiement, ressources, trafic."),
+    description: str = typer.Argument(..., help="Ce qui a change, en une phrase."),
+    run_id: str = typer.Option(..., "--run-id", help="Session concernee."),
+    config: str = typer.Option("injection.yaml", help="Configuration des injections."),
+) -> None:
+    """Horodate une derive reelle sur le serveur (§4.2).
+
+    A lancer juste apres le changement : un deploiement d'une nouvelle version
+    de l'appli de test, un changement de limites d'un conteneur, une montee
+    durable du trafic. L'instant de la derive est la seule chose qu'on ne peut
+    pas retrouver apres coup, et c'est ce dont l'evaluation a besoin.
+    """
+    injecteur = _injecteur(config, avec_appli=False)
+    from infra.injector.labels import horodatage
+
+    derive = injecteur.enregistrer_derive(type_, description, run_id)
+    typer.echo(f"{horodatage(derive.instant_ts)} {derive.type} : {derive.description}")
+    typer.echo(f"-> data/labels/{run_id}_drift.csv")
+
+
 if __name__ == "__main__":
     app()

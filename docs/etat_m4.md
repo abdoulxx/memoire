@@ -40,7 +40,7 @@ la main.
 |---|---|---|
 | A | Appli de test FastAPI : charge simulee, endpoints de panne (latence, 5xx), metriques Prometheus, version deployee | **terminee** le 28/10 a 19h20 (13 tests, image construite et sondee) |
 | B | Docker Compose complet : Prometheus + scrape, node_exporter, cAdvisor, Grafana provisionne (datasource + dashboard JSON) | **terminee** le 28/10 a 20h05 (pile lancee, 5 cibles collectees, 12 tests) |
-| C | Injecteur de pannes : conteneurs stress-ng dedies et limites, allowlist par prefixe, `make stop-chaos`, Locust, ecriture des labels horodates | **en cours** |
+| C | Injecteur de pannes : conteneurs stress-ng dedies et limites, allowlist par prefixe, `make stop-chaos`, Locust, ecriture des labels horodates | **terminee** le 29/10 a 08h40 (39 tests, les 5 types injectes pour de vrai) |
 | D | Enregistrement des sessions : API Prometheus `query_range` -> Parquet, chargeur de session branche sur les features existantes | a faire |
 | E | Tests, D35+ dans `decisions.md`, entree M4 de `journal.md`, suppression de ce fichier | a faire |
 
@@ -192,4 +192,124 @@ docker compose ps
 
 # sur un poste Windows, pour la mise au point seulement :
 docker compose -f docker-compose.yml -f infra/compose/compose.windows.yml up -d
+```
+
+## Resultats de la phase C (injecteur d'anomalies)
+
+`infra/injector/` : `docker_cli.py` (acces a Docker, plus un client factice pour
+les tests), `labels.py` (ecriture et lecture des deux fichiers d'etiquettes du
+§4.2), `injector.py` (l'injecteur et ses garde-fous), `app_client.py` (plan de
+controle de l'appli de test, avec verification de cible), `Dockerfile` (image
+`memoire-chaos`, Alpine + stress-ng epingle). `infra/locust/locustfile.py` pour la
+charge. Parametres dans `configs/injection.yaml`. Quatre commandes : `chaos`,
+`chaos-list`, `chaos-stop`, `drift-note`, plus `make stop-chaos` et
+`make stop-chaos-force`. **39 tests** dans `tests/test_injector.py`, **239 tests
+au total**.
+
+### Trois regles qui portent le §4.3
+
+1. **Deux marques, jamais une seule.** Un conteneur d'injection porte a la fois un
+   prefixe de nom reserve (`memoire-chaos-`) **et** une etiquette Docker
+   (`memoire.injection=1`), et l'injecteur exige les deux avant d'arreter quoi que
+   ce soit. Le prefixe seul se laisse usurper par une erreur de frappe ;
+   l'etiquette seule, n'importe qui peut la poser. Exiger les deux rend impossible
+   de viser par accident un conteneur que l'injecteur n'a pas cree — la propriete
+   la plus importante du §4.3, et la seule qu'on ne peut pas tester sur une vraie
+   machine sans prendre le risque qu'elle ecarte. D'ou le client Docker factice.
+2. **Les garde-fous agissent a la lecture de la configuration, pas au lancement.**
+   Un type qui declare `moyen: conteneur` ou `moyen: charge` sans bloc `limites`
+   fait echouer `Reglages.depuis_config` : il ne peut meme pas etre charge, donc
+   aucun conteneur d'injection ne peut exister sans `--cpus` et `--memory`.
+3. **Aucune injection sans fin.** La duree est obligatoire, plafonnee par
+   `duree_max_s: 600`, et passee **aussi** a `stress-ng --timeout` et a
+   `locust --run-time` : si l'injecteur meurt, le conteneur s'arrete seul.
+
+### Les cinq types du §4.2, injectes pour de vrai
+
+Verification sur la machine de mise au point, qui faisait tourner **14 conteneurs,
+dont 9 sans aucun rapport avec le memoire** — exactement la situation pour laquelle
+le §4.3 existe.
+
+| Type | Demande | Mesure |
+|---|---|---|
+| `pic_cpu` | 2 travailleurs, 200 s | `cpu=98,77 %`, `mem=16,69 MiB / 256 MiB` : la limite d'un cœur tient exactement ; etiquette 201 s |
+| `fuite_memoire` | 192 MiB, 30 s | `205,9 MiB / 256 MiB`, aucun OOM-kill : la limite doit bien rester superieure a l'intensite ; etiquette 32 s |
+| `latence` | +250 ms, 20 s | etiquette 08:28:56 -> 08:29:16, **exactement 20 s** (pas de conteneur a demarrer) |
+| `erreurs` | 30 % de 5xx, 20 s | etiquette 08:29:17 -> 08:29:37, exactement 20 s |
+| `saturation` | 150 utilisateurs, 40 s | trafic de 0 a **230 req/s**, p95 de 0,10 s a **0,234 s** ; etiquette 44 s |
+
+Les injections par conteneur portent 1 a 4 secondes de demarrage de plus que la
+duree demandee, et l'etiquette porte la duree **subie** : c'est voulu, et c'est la
+raison d'etre du point 3 ci-dessous.
+
+Garde-fous verifies sur la meme machine : les deux leurres (un conteneur avec
+l'etiquette seule, un autre avec le prefixe seul) sont **refuses, code de sortie 2,
+et survivent** ; `chaos-list` ne liste que la vraie injection ; `chaos-stop` arrete
+**1 conteneur et laisse les 13 autres tourner**.
+
+### Quatre defauts trouves par cette verification, et corriges
+
+Les quatre tiennent au meme endroit : **une etiquette qui ne decrit pas ce qui
+s'est passe est pire que pas d'etiquette du tout**, parce qu'elle produit un
+resultat faux au lieu d'un resultat manquant.
+
+1. **Une anomalie annoncee qui n'a pas eu lieu.** Les premieres injections par
+   conteneur s'arretaient a la premiere seconde (`aborting: temp-path '.' must be
+   readable and writeable` : utilisateur non privilegie dans un repertoire non
+   inscriptible). `docker run` renvoyait pourtant 0, `--rm` effacait le conteneur,
+   et l'injecteur ecrivait une etiquette de 180 s sur des metriques parfaitement
+   normales. Corrige par `WORKDIR /tmp` dans l'image, `--read-only` plus un
+   `--tmpfs /tmp:size=64m,mode=1777` borne, et surtout par une **verification de
+   demarrage** : si le conteneur ne tourne pas, l'injecteur leve une erreur avec
+   les dernieres lignes du journal et **n'ecrit aucune etiquette**. Les fausses
+   etiquettes produites pendant l'essai ont ete supprimees.
+2. **Une injection interrompue etiquetait la duree demandee.** L'attente etait un
+   `sleep` aveugle : un `make stop-chaos` pendant une injection de 240 s laissait
+   l'injecteur attendre l'echeance, puis etiqueter 242 s alors que la charge avait
+   cesse au bout de 90 s. L'attente **surveille maintenant le conteneur** (un
+   `docker inspect` toutes les 2 s) et rend la main des qu'il disparait. Remesure
+   apres correction : arret declenche a 08:35:51 sur une injection de 240 s
+   commencee a 08:34:19, etiquette **08:34:19 -> 08:35:55**, soit 96 s — la duree
+   subie, detectee en 4 s. Le meme chemin couvre l'OOM-kill et l'arret imprevu de
+   `stress-ng`.
+3. **L'arret d'urgence disait « remis a zero » alors qu'il avait echoue.** La
+   remise a zero du plan de controle de l'appli etait tentee dans un `except`
+   silencieux : `chaos-stop` affichait un succes alors que la latence injectee
+   continuait de courir. Un arret d'urgence qui ment est lui-meme un probleme de
+   securite. La commande renvoie desormais le resultat du plan de controle en
+   clair (`remis a zero`, `inchange : <erreur>`, ou `non joignable : ...`), et un
+   test fixe la propriete.
+4. **L'URL par defaut de l'appli pointait vers un service tiers.** Le port publie
+   est une variable depuis la phase B parce que 8000 etait deja pris sur la
+   machine : `configs/injection.yaml` pointait donc vers une application sans
+   rapport, et un POST `/chaos/latency` lui serait parti — ce que le §4.3
+   interdit. Le client **verifie sa cible** avant la premiere injection (la
+   signature de `/health` de l'appli de test) et refuse tout le reste ; un 404
+   serait arrive trop tard, la requete etant deja partie. `MEMOIRE_APP_URL` est
+   documentee dans `.env.example` et a la priorite sur le YAML.
+
+### Ce qui reste a verifier sur le serveur Linux
+
+- **Les deux panneaux par conteneur** (CPU et memoire), toujours vides sous Docker
+  Desktop pour la raison expliquee en phase B. Ce sont eux qui permettent de
+  verifier a l'œil qu'une injection **reste dans son conteneur et sous sa
+  limite** : a verifier avant la premiere session enregistree, pas apres.
+- **`make stop-chaos-force`** utilise `xargs -r`, qui est une extension GNU : vrai
+  sur le serveur, non verifiable sur ce poste.
+- **La duree de demarrage des conteneurs d'injection** (1 a 4 s ici) sera
+  differente sur le serveur. Elle n'a pas besoin d'etre connue a l'avance puisque
+  l'etiquette porte la duree subie, mais elle fixe le plancher utile d'une
+  injection : une anomalie de 5 s ne serait pas mesurable.
+
+### Comment rejouer la verification
+
+```bash
+docker build -f infra/injector/Dockerfile -t memoire-chaos:0.18.07 .
+docker pull locustio/locust:2.32.4
+
+uv run mdrift chaos pic_cpu --duree 60 --run-id essai
+uv run mdrift chaos-list
+make stop-chaos                      # arret d'urgence du §4.3
+uv run mdrift drift-note deploiement "appli de test 1.1.0" --run-id essai
+cat data/labels/essai.csv data/labels/essai_drift.csv
 ```

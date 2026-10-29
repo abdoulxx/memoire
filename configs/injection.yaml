@@ -1,0 +1,100 @@
+# Injection d'anomalies sur le serveur (livrable M4, phase C).
+#
+# Aucune valeur en dur dans le code : les intensites, les durees et surtout les
+# LIMITES des conteneurs d'injection sont ici, et le code refuse de creer un
+# conteneur dont les limites manquent.
+#
+# Regle du §4.3 du cadrage, qui est la raison d'etre de ce fichier : l'injecteur
+# ne touche QUE des conteneurs qu'il a lui-meme crees. Deux marques sont exigees
+# ensemble — le prefixe de nom et l'etiquette Docker — et un conteneur qui n'a
+# pas les deux est refuse, meme pour un simple arret. Une erreur de frappe ne
+# peut donc pas viser un conteneur de production.
+
+securite:
+  # Prefixe reserve. Tout conteneur d'injection s'appelle
+  # <prefixe>-<type>-<horodatage>.
+  prefixe: memoire-chaos
+  # Etiquette Docker posee a la creation. `docker ps --filter label=...` ne
+  # renvoie alors que nos conteneurs, et l'injecteur verifie les deux marques
+  # avant d'arreter quoi que ce soit.
+  etiquette: memoire.injection
+  # Plafond absolu, toutes injections confondues. Une anomalie est un evenement
+  # court par definition du cadrage ; ce qui dure est une derive, et une derive
+  # s'obtient par un deploiement. Une injection oubliee contaminerait toutes les
+  # etiquettes suivantes.
+  duree_max_s: 600
+  # Reseau sur lequel attacher les conteneurs d'injection. Le meme que la pile,
+  # pour que cAdvisor les voie et que la charge atteigne l'appli de test.
+  reseau: memoire
+
+# Image des conteneurs d'injection, construite par le depot et non tiree d'un
+# registre tiers : `docker build -f infra/injector/Dockerfile -t memoire-chaos:0.18.07 .`
+image_stress: memoire-chaos:0.18.07
+
+# Image de l'injecteur de charge, epinglee.
+image_charge: locustio/locust:2.32.4
+
+# L'appli de test, vue depuis l'hote. Les injections `latence` et `erreurs`
+# passent par son plan de controle, pas par un conteneur.
+#
+# La variable d'environnement MEMOIRE_APP_URL a la priorite sur cette valeur :
+# le port publie sur l'hote est lui-meme une variable depuis la phase B
+# (APP_PORT), parce que 8000 etait deja pris par une application sans rapport.
+# Pointer l'injecteur vers le mauvais port serait envoyer une requete a un
+# service tiers, ce que le §4.3 interdit — d'ou aussi la verification de cible
+# faite par le client avant la premiere injection.
+appli:
+  url: http://127.0.0.1:8000
+
+# Les cinq types d'anomalie du §4.2 du cadrage. `limites` est obligatoire pour
+# tout type qui cree un conteneur.
+types:
+  pic_cpu:
+    moyen: conteneur
+    intensite_defaut: 2        # nombre de travailleurs stress-ng
+    duree_defaut_s: 180        # 1 a 5 min (§4.2)
+    limites:
+      cpus: 1.0                # jamais plus d'un cœur : le bruit de fond reste lisible
+      memoire: 256m
+
+  fuite_memoire:
+    moyen: conteneur
+    intensite_defaut: 192      # Mio reclames par le travailleur
+    duree_defaut_s: 240
+    limites:
+      # La limite doit etre SUPERIEURE a l'intensite, sinon le noyau tue le
+      # processus des la premiere seconde et l'anomalie ne dure pas.
+      cpus: 0.5
+      memoire: 256m
+
+  latence:
+    moyen: appli
+    intensite_defaut: 200      # millisecondes ajoutees
+    duree_defaut_s: 120
+
+  erreurs:
+    moyen: appli
+    intensite_defaut: 0.2      # part de reponses 5xx, entre 0 et 1
+    duree_defaut_s: 120
+
+  saturation:
+    moyen: charge
+    intensite_defaut: 200      # utilisateurs simultanes Locust
+    duree_defaut_s: 120
+    # Le generateur de charge est borne lui aussi : une saturation doit saturer
+    # l'appli de test, pas le serveur.
+    limites:
+      cpus: 1.0
+      memoire: 512m
+    locust:
+      # Cadence d'arrivee des utilisateurs. Une rampe courte rend le pic net
+      # dans les metriques, donc la fenetre d'anomalie facile a etiqueter.
+      arrivee_par_s: 50
+      cible: http://app:8000
+
+# Etiquettes de la session. Un `run_id` par session d'enregistrement ; deux
+# fichiers, comme le demande le §4.2 du cadrage.
+etiquettes:
+  dossier: data/labels
+  # <run_id>.csv        : start_ts, end_ts, type, intensite
+  # <run_id>_drift.csv  : ts, type, description
