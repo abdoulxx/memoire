@@ -374,10 +374,83 @@ fichiers. Les resultats de M3 sont complets ; `results/summary.csv`, `results/hy
 `results/summary_m3_derive_naturelle.csv`, `docs/tableaux_chapitre6.md` et les 6 figures de
 `docs/figures/` sont les sources du chapitre 6.
 
-## Prochaine etape : M4
-Infrastructure sur le serveur personnel : Docker Compose (appli de test FastAPI, Prometheus,
-node_exporter, cAdvisor, Grafana), injecteur de pannes en conteneurs dedies avec limites Docker et
-arret d'urgence `make stop-chaos`, enregistrement des sessions en Parquet avec leurs labels
-(`data/labels/<run_id>.csv` et `<run_id>_drift.csv`). Les regles du §4.3 sont non negociables :
-aucune injection sur un conteneur de production, aucun secret, IP, nom d'hote ou domaine dans le
-depot, les resultats ou les captures.
+## 2026-10-28 / 2026-11-11 — M4 : infrastructure du serveur, injecteur de pannes, enregistrement des sessions
+Debut 28/10 a 18h40, fin 11/11. Cinq phases, push a la fin de chacune. M4 produit du **code et des
+configurations** : le deploiement sur le serveur et l'enregistrement des vraies sessions appartiennent
+a Sidy, et le depot doit lui donner **une commande par etape**, rien qui demande un reglage a la main.
+Les regles du §4.3 encadrent tout le jalon.
+
+- **Phase A — appli de test FastAPI** (28/10, 19h20, 13 tests) : charge simulee, endpoints de panne
+  (`/chaos/latency`, `/chaos/errors`), metriques Prometheus, version deployee exposee en etiquette.
+  L'appli **s'auto-perturbe** et son plan de controle est exempte de toute injection (D35) ; image
+  construite et sondee : `/work` passe de 0,10 s a 0,44 s sous une injection de 400 ms. Deux points
+  mesures ont change le code : les bornes de l'histogramme de latence, resserrees sous 100 ms, sans
+  quoi une injection de latence serait invisible dans les donnees ; et un `HEALTHCHECK`, ajoute apres
+  deux requetes refusees au demarrage du conteneur.
+- **Phase B — pile Docker Compose** (28/10, 20h05, 12 tests) : Prometheus avec sa configuration de
+  collecte, node_exporter, cAdvisor, Grafana provisionne (datasource + tableau de bord engendre,
+  15 panneaux). **5 services sur 5** demarres, **4 cibles `up`** (la cible `detection` reste `down`
+  jusqu'a M5), **15 des 18 requetes** de panneaux rendant des series. Quatre regles de publication
+  (D36) : rien sur `0.0.0.0` par defaut, aucun port pour node_exporter et cAdvisor, pas de Grafana
+  sans mot de passe, ports publies variables — parce que **8000 et 9100 etaient deja pris** par des
+  services sans rapport, et que le §4.3 interdit d'y toucher. Retention Prometheus bornee en duree
+  **et** en taille.
+- **Phase C — injecteur de pannes** (29/10, 08h40, 39 tests) : conteneurs `stress-ng` dedies et
+  limites, **deux marques exigees** (prefixe de nom **et** etiquette Docker), `make stop-chaos`,
+  Locust, ecriture des labels horodates. Les cinq types du §4.2 ont ete **reellement injectes** sur
+  une machine faisant tourner 14 conteneurs dont 9 etrangers au memoire : `pic_cpu` 98,77 % de CPU et
+  16,69 MiB sur 256 MiB ; `fuite_memoire` 205,9 MiB sur 256 MiB sans OOM-kill ; `latence` +250 ms ;
+  `erreurs` 30 % de 5xx ; `saturation` 230 requetes/s et p95 de 0,10 s a 0,234 s. Deux conteneurs
+  leurres, chacun portant une seule des deux marques, ont ete **refuses** et ont survecu (D37).
+- **Phase D — enregistrement et rejeu des sessions** (11/11, 50 tests ajoutes) : lecture de
+  `query_range` vers Parquet, chargeur de session, et `build_server_stream` qui rend un flux que le
+  **harnais de M2 traite sans modification**. Quatre regles d'alignement temporel sont posees
+  explicitement et tenues par des tests : grille d'instants multiples du pas, bornes d'anomalie
+  incluses, anomalie plus courte que le pas signalee, part d'entrainement refusee si contaminee (D38).
+  Trois commandes : `session-check`, `session-record`, `session-info`.
+- **Phase E — documentation** (11/11) : D35 a D38 dans `docs/decisions.md`, cette entree, suppression
+  du fichier de reprise `docs/etat_m4.md` dont le contenu definitif est ici.
+
+### Ce que M4 apporte au memoire
+La **description des donnees reelles** du chapitre 5 : l'architecture de la pile (5.1), l'appli de
+test et ses endpoints (5.2), le tableau des cinq types d'anomalies avec leurs mesures reelles et les
+regles de securite du §4.3 (5.3). Les captures Grafana illustreront le chapitre 5 une fois la pile
+deployee. La source `serveur` est branchee sur le harnais de M2 : une session enregistree se rejoue
+comme une machine du SMD, ce qui est la condition du test final de M6.
+
+### Le defaut le plus grave du jalon, et pourquoi il ne pouvait etre trouve qu'en lancant
+L'injecteur **attendait l'echeance a l'aveugle** avant d'ecrire l'etiquette. Un `make stop-chaos` a
+90 s sur une injection de 240 s produisait une etiquette de **240 s** : une anomalie etiquetee la ou
+il ne s'etait plus rien passe pendant deux minutes. Une etiquette qui decrit mal ce qui a eu lieu est
+**pire** qu'une etiquette absente : elle produit un faux resultat au lieu d'un resultat manquant.
+L'attente surveille desormais le conteneur et l'etiquette porte la duree **reellement subie**
+(mesure : arret detecte en 4 s, etiquette de 96 s pour une demande de 240 s). Aucun test ne l'avait
+vu, parce que tous passaient par un client Docker factice ou le conteneur ne meurt jamais tout seul.
+Trois autres defauts du meme genre ont ete corriges : OOM-kill silencieux sur une fuite memoire trop
+intense, `chaos-stop` qui annoncait un succes alors que la remise a zero avait echoue dans un `except`
+muet, et une URL par defaut qui pointait vers un service tiers. A l'inverse, le defaut de la phase D
+— `float("+Inf")` qui reussit, donc une valeur non finie recopiee dans les donnees — a ete trouve
+**par un test**, qui attendait 1,0 et a obtenu 0,5.
+
+### Trois choses que seul Sidy peut faire, et dans cet ordre
+1. Deployer la pile sur le serveur Linux et **verifier les deux panneaux par conteneur** (CPU et
+   memoire), vides sous Docker Desktop parce que cAdvisor n'y expose pas l'etiquette `name`. Ce sont
+   eux qui montrent qu'une injection reste dans son conteneur et sous sa limite : a verifier **avant**
+   la premiere session, pas apres.
+2. Verifier `make stop-chaos-force` sur le serveur (`xargs -r` est une extension GNU) et lancer
+   `uv run mdrift session-check`, qui refuse d'enregistrer si une metrique obligatoire est muette.
+3. Enregistrer les sessions avec `session-record`, en commencant par une **periode calme d'au moins
+   40 %** du flux : le chargeur refuse une session dont la part d'entrainement contient une anomalie
+   ou une derive.
+
+Etat du code : **289 tests passent** (175 a la fin de M3), `ruff check` et `ruff format --check` sans
+remarque sur 85 fichiers.
+
+## Prochaine etape : M5
+Boucle en ligne : service de detection qui lit Prometheus chaque minute, applique le champion,
+surveille la derive et execute la strategie P ; registre MLflow avec l'alias `champion` ; exporter
+Prometheus (score d'anomalie, alertes, signal et confirmation de derive, version du modele en
+service, `window_ms_mean` et `window_ms_p95` du §9) ; tableau de bord Grafana branche sur ces
+metriques ; notifications Telegram regroupees a un message par minute et par type. Livrable memoire :
+les captures du pipeline MLOps du chapitre 5. Le jeton Telegram et l'identifiant de conversation
+passent par l'environnement, jamais par le depot.
