@@ -48,6 +48,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+
 from src.features.signature import SignatureFeatures
 from src.models.isolation_forest import IsolationForestDetector
 
@@ -57,6 +59,17 @@ if TYPE_CHECKING:  # pragma: no cover - uniquement pour les annotations
 ALIAS_CHAMPION = "champion"
 NOM_ARTEFACT = "modele"
 FICHIER_MODELE = "detecteur.joblib"
+
+# Les features d'entrainement du modele, enregistrees a cote de lui. Elles ne
+# servent pas a predire : elles sont la **reference** du moniteur de derive
+# (`DriftMonitor.fit_reference`), qui compare la distribution recente a celle
+# sur laquelle le modele en service a appris. Sans elles, un service qui
+# redemarre ne peut que recaler son moniteur sur les donnees recentes, c'est-a-dire
+# comparer le present a lui-meme : une derive survenue pendant l'arret devient
+# invisible, definitivement, et rien ne le signale. C'est le genre de defaut
+# qui ne se voit sur aucun tableau de bord.
+NOM_ARTEFACT_REFERENCE = "reference"
+FICHIER_REFERENCE = "features_entrainement.npz"
 
 
 class ErreurRegistre(RuntimeError):
@@ -136,6 +149,12 @@ class VersionModele:
     alias: str | None = None
     signature: SignatureFeatures | None = None
     tags: dict[str, str] | None = None
+    # Nombre de fenetres de reference enregistrees avec le modele (0 = aucune).
+    reference_n_windows: int = 0
+
+    @property
+    def a_une_reference(self) -> bool:
+        return self.reference_n_windows > 0
 
     @property
     def est_champion(self) -> bool:
@@ -237,6 +256,7 @@ class RegistreModeles:
         parametres: dict[str, Any] | None = None,
         metriques: dict[str, float] | None = None,
         tags: dict[str, str] | None = None,
+        reference_X: np.ndarray | None = None,
     ) -> VersionModele:
         """Enregistre un modele entraine et rend la version creee.
 
@@ -270,6 +290,15 @@ class RegistreModeles:
             with tempfile.TemporaryDirectory() as dossier:
                 chemin = detecteur.save(Path(dossier) / FICHIER_MODELE)
                 self.client.log_artifact(run_id, str(chemin), artifact_path=NOM_ARTEFACT)
+                if reference_X is not None:
+                    # Compresse : W fenetres x 152 features en float64 font
+                    # quelques mega-octets par version, et une campagne en
+                    # produit plusieurs dizaines.
+                    reference = Path(dossier) / FICHIER_REFERENCE
+                    np.savez_compressed(reference, features=np.asarray(reference_X))
+                    self.client.log_artifact(
+                        run_id, str(reference), artifact_path=NOM_ARTEFACT_REFERENCE
+                    )
             self.client.set_terminated(run_id, "FINISHED")
 
             self._assurer_modele()
@@ -282,6 +311,12 @@ class RegistreModeles:
                     "raison": raison,
                     "seuil": f"{float(detecteur.threshold):.6f}",
                     "n_train_windows": str(detecteur.n_train_windows),
+                    # 0 dit « cette version n'a pas de reference » : le service
+                    # le lit avant de telecharger, et refuse de demarrer sur un
+                    # champion qu'il ne saurait pas surveiller.
+                    "reference_n_windows": str(
+                        0 if reference_X is None else len(np.asarray(reference_X))
+                    ),
                     **signature.as_tags(),
                     **(tags or {}),
                 },
@@ -411,6 +446,48 @@ class RegistreModeles:
         detecteur, decrite = self.charger(courant, signature_attendue)
         return detecteur, replace(decrite, alias=self.reglages.alias)
 
+    def charger_reference(self, version: VersionModele | int) -> np.ndarray:
+        """Telecharge les features d'entrainement d'une version.
+
+        Echoue explicitement quand la version n'en porte pas : demarrer le
+        service sans reference reviendrait a recaler le moniteur de derive sur
+        les donnees du moment, donc a comparer le present a lui-meme. Mieux vaut
+        refuser de demarrer et le dire.
+        """
+        if isinstance(version, VersionModele):
+            decrite = version
+        else:
+            try:
+                decrite = self._decrire(
+                    self.client.get_model_version(self.reglages.model_name, str(int(version)))
+                )
+            except Exception as erreur:  # noqa: BLE001
+                raise self._erreur(f"La lecture de la version {version}", erreur) from erreur
+        if not decrite.a_une_reference:
+            raise ErreurRegistre(
+                f"La version {decrite.version} n'a pas de features d'entrainement "
+                "enregistrees : le moniteur de derive n'aurait aucune reference a "
+                "laquelle comparer les fenetres recentes. Reentrainer un modele initial "
+                "avec `mdrift registry-init`."
+            )
+        with tempfile.TemporaryDirectory() as dossier:
+            try:
+                chemin = self.client.download_artifacts(
+                    decrite.run_id, f"{NOM_ARTEFACT_REFERENCE}/{FICHIER_REFERENCE}", dossier
+                )
+            except Exception as erreur:  # noqa: BLE001
+                raise self._erreur(
+                    f"Le telechargement de la reference de la version {decrite.version}", erreur
+                ) from erreur
+            with np.load(chemin) as archive:
+                features = np.asarray(archive["features"], dtype=np.float64)
+        if features.ndim != 2 or len(features) == 0:
+            raise ErreurRegistre(
+                f"La reference de la version {decrite.version} a la forme {features.shape} : "
+                "une matrice (fenetres, features) est attendue."
+            )
+        return features
+
     # ------------------------------------------------------------- conversion
 
     def _decrire(self, version: ModelVersion, alias: str | None = None) -> VersionModele:
@@ -424,6 +501,7 @@ class RegistreModeles:
             threshold=float(tags.get("seuil", "nan")),
             n_train_windows=int(tags.get("n_train_windows", 0)),
             raison=str(tags.get("raison", "")),
+            reference_n_windows=int(tags.get("reference_n_windows", 0)),
             cree_le=(
                 datetime.fromtimestamp(cree / 1000, UTC).isoformat(timespec="seconds")
                 if cree

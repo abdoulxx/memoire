@@ -1507,6 +1507,12 @@ def registry_init(
             parametres={"seed": seed, "source": "serveur", "session": run_id},
             metriques={"n_train_points": float(len(session.train))},
             tags={"session": run_id, "source": "serveur"},
+            # La matrice d'entrainement part avec le modele : c'est la reference
+            # du moniteur de derive. Un service qui redemarre doit comparer les
+            # fenetres recentes a ce sur quoi le champion a appris, pas aux
+            # donnees du moment, sinon une derive survenue pendant l'arret ne
+            # sera jamais vue.
+            reference_X=flux.train_X,
         )
         typer.echo(f"Enregistre : {version.resume()}")
         if not sans_promotion:
@@ -1553,6 +1559,13 @@ def registry_info(
                 f"fenetre {courant.signature.window_size} x pas "
                 f"{courant.signature.sampling_interval_seconds}s"
             )
+        if courant.a_une_reference:
+            typer.echo(f"  reference       {courant.reference_n_windows} fenetres d'entrainement")
+        else:
+            typer.echo(
+                "  reference       ABSENTE : le service refusera de demarrer, le moniteur "
+                "de derive n'aurait rien a quoi comparer les fenetres recentes."
+            )
 
     typer.echo(f"  versions        {len(versions)}")
     for version in versions:
@@ -1560,6 +1573,114 @@ def registry_info(
         typer.echo(
             f"   {marque} v{version.version:<4} {version.cree_le}  {version.raison:<12} "
             f"seuil={version.threshold:.4f} n_train={version.n_train_windows}"
+        )
+
+
+@app.command("serve")
+def serve(
+    config: str = typer.Option("datasets/serveur.yaml", help="Configuration de la source."),
+    features: str = typer.Option("features.yaml", help="Configuration des features."),
+    model: str = typer.Option("model.yaml", help="Configuration du modele."),
+    drift: str = typer.Option("drift.yaml", help="Configuration des detecteurs de derive."),
+    strategie: str = typer.Option("", help="Strategie appliquee (defaut : celle de serving.yaml)."),
+    serving: str = typer.Option("serving.yaml", help="Configuration du mode en ligne."),
+    seed: int = typer.Option(42, help="Seed des challengers reentraines."),
+    duree_min: float = typer.Option(
+        0.0, help="Duree de service en minutes (0 = jusqu'a interruption)."
+    ),
+    une_fois: bool = typer.Option(
+        False, "--une-fois", help="Un seul tick, puis arret : verification de configuration."
+    ),
+    sans_promotion: bool = typer.Option(
+        False,
+        "--sans-promotion",
+        help="Reentraine et valide, mais ne met rien en service : repetition avant demonstration.",
+    ),
+    run_id: str = typer.Option("", help="Identifiant du run (defaut : horodate)."),
+) -> None:
+    """Lance le service de detection en ligne sur la pile de collecte.
+
+    C'est le mode en ligne du §2 : Prometheus -> features -> champion -> score,
+    surveillance de derive, reentrainement, validation, promotion. Le modele en
+    service vient du registre et y retourne ; le journal d'evenements ecrit ici
+    est ce que liront l'exporter et les notifications.
+
+    A lancer apres `mdrift session-check` (la collecte repond) et
+    `mdrift registry-info` (un champion existe et porte la bonne signature) :
+    ces deux commandes disent en une seconde ce que le service mettrait une
+    minute a decouvrir.
+    """
+    from src.serving.loop import BoucleEnLigne, ErreurBoucle, ReglagesBoucle
+    from src.serving.prometheus import ClientPrometheus, ErreurPrometheus
+    from src.strategies.factory import build_strategy
+    from src.tracking.registry import ErreurRegistre
+
+    serving_config = load_config(serving)
+    try:
+        reglages_boucle = ReglagesBoucle.depuis_config(serving_config, PROJECT_ROOT_DISPLAY)
+    except ErreurBoucle as erreur:
+        typer.echo(f"Configuration : {erreur}", err=True)
+        raise typer.Exit(code=2) from erreur
+
+    # La source et la strategie viennent de serving.yaml, sauf si la ligne de
+    # commande les surcharge : une demonstration doit pouvoir montrer B0 ou B1
+    # sans modifier un fichier suivi par git.
+    reglages = _reglages_serveur(config if config else reglages_boucle.source)
+    features_config = load_config(features)
+    strategy = build_strategy(
+        load_config(strategie or reglages_boucle.strategie),
+        features_config,
+        load_config(drift),
+        reglages.pas_s,
+    )
+
+    boucle = BoucleEnLigne(
+        client=ClientPrometheus(reglages.url),
+        registre=_registre(serving),
+        reglages_serveur=reglages,
+        reglages_boucle=reglages_boucle,
+        strategy=strategy,
+        features_config=features_config,
+        model_config=load_config(model),
+        seed=seed,
+        run_id=run_id or None,
+        promotion=not sans_promotion,
+    )
+
+    typer.echo(f"Service {boucle.run_id}, strategie {strategy.name}, pas {reglages.pas_s}s")
+    try:
+        boucle.demarrer()
+    except (ErreurBoucle, ErreurRegistre, ErreurPrometheus) as erreur:
+        typer.echo(f"Demarrage impossible : {erreur}", err=True)
+        raise typer.Exit(code=2) from erreur
+
+    typer.echo(
+        f"  champion        version {boucle.version.version}, "
+        f"seuil {boucle.champion.threshold:.4f}, "
+        f"empreinte features {boucle.signature.empreinte}"
+    )
+    typer.echo(f"  historique      {boucle.n_fenetres_vues} fenetres prechargees (non scorees)")
+    typer.echo(f"  journal         {boucle.journal.chemin}")
+    if sans_promotion:
+        typer.echo("  promotion       DESACTIVEE : les challengers valides ne seront pas promus")
+
+    try:
+        boucle.executer(
+            duree_s=duree_min * 60.0 if duree_min > 0 else None,
+            max_ticks=1 if une_fois else None,
+        )
+    except KeyboardInterrupt:  # pragma: no cover - interruption manuelle
+        typer.echo("\nInterrompu.")
+
+    typer.echo(
+        f"Arret : {boucle.n_fenetres_vues} fenetres, {boucle.n_alertes} alertes, "
+        f"{boucle.n_sautees} sautees, {boucle.n_reentrainements} reentrainements "
+        f"({boucle.n_promotions} promus, {boucle.n_rejets} rejetes)"
+    )
+    if boucle.mesures.n:
+        typer.echo(
+            f"  window_ms       moyenne {boucle.mesures.moyenne:.1f}, "
+            f"p95 {boucle.mesures.p95:.1f} (budget : {reglages.pas_s * 1000} ms)"
         )
 
 

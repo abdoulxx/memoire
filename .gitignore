@@ -5,6 +5,9 @@ data/sessions/
 
 # Resultats volumineux : seul summary.csv est suivi
 results/runs/
+# Journaux du service en ligne : traces d'exploitation, pas des resultats.
+# Les captures du chapitre 5 viennent de Grafana, pas de ces fichiers.
+results/online/
 
 # Secrets
 .env

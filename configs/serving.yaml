@@ -32,3 +32,41 @@ registry:
   # d'une minute. Mieux vaut echouer vite, journaliser, et garder le champion.
   timeout_s: 10
   max_retries: 1
+
+# Ou la boucle lit son flux et quelle strategie elle applique. Ces deux chemins
+# sont ceux du rejeu : le service en ligne n'a pas de configuration de detection
+# qui lui soit propre, c'est la condition pour que le chapitre 5 montre ce que
+# le chapitre 6 mesure.
+source: datasets/serveur.yaml
+strategie: strategies/proposed.yaml
+
+boucle:
+  # Delai d'attente apres un instant de grille avant de le demander a Prometheus.
+  # Un `scrape_interval` de 15 s signifie qu'un point peut arriver jusqu'a 15 s
+  # apres l'instant qu'il porte : interroger sans delai rendrait un trou que la
+  # boucle compterait comme une fenetre sautee.
+  retard_s: 20
+
+  # Au-dela de ce retard, la boucle ne rattrape pas : elle repart des points
+  # recents et journalise `collect_gap`. Rejouer une demi-journee fenetre par
+  # fenetre produirait des alertes sur des evenements passes depuis longtemps,
+  # que le §7 compterait en fausses alertes. 60 points = une heure a pas de 60 s.
+  rattrapage_max_points: 60
+
+  # Fenetres passees chargees au demarrage pour remplir l'historique de
+  # reentrainement. Elles ne sont **ni scorees ni alertees** : elles servent
+  # uniquement a ce que le garde-fou « historique < 300 fenetres » du §6 ne
+  # bloque pas tout reentrainement pendant les premieres heures de service, ni
+  # apres chaque redemarrage. 400 > 300 avec de la marge.
+  prefill_fenetres: 400
+
+  # Profondeur de l'historique garde en memoire, en fenetres. Il borne ce dans
+  # quoi la strategie peut puiser pour reentrainer. 20000 fenetres a pas de 60 s
+  # font deux semaines, soit bien plus que la plus large fenetre W envisagee.
+  historique_max_fenetres: 20000
+
+journal:
+  # Journal JSON lignes du §9, une ligne par evenement. C'est la source unique
+  # que lisent l'exporter Prometheus (phase C) et les notifications Telegram
+  # (phase D) : `<dossier>/<run_id>/events.jsonl`.
+  dossier: results/online

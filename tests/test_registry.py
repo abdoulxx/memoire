@@ -296,3 +296,69 @@ def test_charger_sans_signature_attendue_ne_verifie_rien(registre: RegistreModel
 def test_charger_une_version_inexistante_echoue_clairement(registre: RegistreModeles) -> None:
     with pytest.raises(ErreurRegistre, match="version 99"):
         registre.charger(99)
+
+
+# --------------------------------------------------------------------- reference
+# La matrice d'entrainement est la reference du moniteur de derive. Elle n'a
+# aucun effet sur les scores, donc rien ne la signale si elle manque : le
+# service recalerait son moniteur sur les donnees du moment et comparerait le
+# present a lui-meme. Ces tests sont le seul endroit ou cette absence se voit.
+
+
+def test_la_reference_fait_l_aller_retour_sans_alteration(registre: RegistreModeles) -> None:
+    detecteur, X = _detecteur()
+    version = registre.enregistrer(
+        detecteur, signature=_signature(), raison="initial_fit", reference_X=X
+    )
+
+    assert version.a_une_reference
+    assert version.reference_n_windows == len(X)
+    relue = registre.charger_reference(version)
+    assert relue.shape == X.shape
+    np.testing.assert_allclose(relue, X)
+
+
+def test_une_version_sans_reference_le_dit_et_refuse_de_la_rendre(
+    registre: RegistreModeles,
+) -> None:
+    detecteur, _ = _detecteur()
+    version = registre.enregistrer(detecteur, signature=_signature(), raison="initial_fit")
+
+    assert not version.a_une_reference
+    assert version.reference_n_windows == 0
+    with pytest.raises(ErreurRegistre, match="moniteur de derive"):
+        registre.charger_reference(version)
+
+
+def test_la_reference_se_lit_aussi_par_numero_de_version(registre: RegistreModeles) -> None:
+    detecteur, X = _detecteur()
+    version = registre.enregistrer(
+        detecteur, signature=_signature(), raison="initial_fit", reference_X=X
+    )
+
+    np.testing.assert_allclose(registre.charger_reference(int(version.version)), X)
+
+
+def test_la_reference_d_une_version_inexistante_est_une_erreur_explicite(
+    registre: RegistreModeles,
+) -> None:
+    with pytest.raises(ErreurRegistre, match="version 99"):
+        registre.charger_reference(99)
+
+
+def test_chaque_version_porte_sa_propre_reference(registre: RegistreModeles) -> None:
+    """Deux promotions successives n'entrainent pas sur les memes donnees.
+
+    Si les references se melangeaient, le moniteur du champion promu
+    comparerait les fenetres recentes a l'entrainement du modele precedent :
+    une derive deja absorbee par le reentrainement resterait signalee.
+    """
+    premier, X1 = _detecteur(seed=1, n_windows=200)
+    second, X2 = _detecteur(seed=2, n_windows=150)
+    v1 = registre.enregistrer(premier, signature=_signature(), raison="initial_fit", reference_X=X1)
+    v2 = registre.enregistrer(
+        second, signature=_signature(), raison="drift_retrain", reference_X=X2
+    )
+
+    np.testing.assert_allclose(registre.charger_reference(v1), X1)
+    np.testing.assert_allclose(registre.charger_reference(v2), X2)

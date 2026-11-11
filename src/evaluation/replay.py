@@ -28,6 +28,10 @@ Cycle d'un reentrainement, du cote du harnais :
     verdict  = strategy.validate(stats)      # mise en service ou rejet
     si promu : champion = challenger, puis strategy.on_fit(plan.train_X, i)
 
+Les quatre lignes du milieu vivent dans `src/strategies/retraining.py` : la
+boucle en ligne du jalon M5 execute le **meme** cycle, et le factoriser est ce
+qui garantit que le chapitre 5 montre bien la strategie evaluee au chapitre 6.
+
 Note d'implementation : entre deux promotions, le modele en service ne change
 pas. Le harnais score donc par blocs plutot que fenetre par fenetre, ce qui est
 **exactement equivalent** au scoring point par point et evite des dizaines de
@@ -64,7 +68,8 @@ from src.config import PROJECT_ROOT
 from src.evaluation.metrics import CostMetrics, EvaluationResult, evaluate
 from src.evaluation.promotions import evaluate_promotions
 from src.models.isolation_forest import IsolationForestDetector, build_detector
-from src.strategies.base import Strategy, ValidationStats, WindowContext
+from src.strategies.base import Strategy, WindowContext
+from src.strategies.retraining import run_retrain_cycle
 
 RESULTS_DIR = PROJECT_ROOT / "results"
 SUMMARY_PATH = RESULTS_DIR / "summary.csv"
@@ -186,13 +191,6 @@ def make_run_id(stream: ReplayStream, strategy_name: str, seed: int) -> str:
     return f"{stream.source}_{stream.machine}_{stream.scenario}_{strategy_name}_seed{seed}"
 
 
-def _alert_rate(scores: np.ndarray, threshold: float) -> float:
-    """Taux d'alertes d'un modele sur un bloc de fenetres. Aucune etiquette requise."""
-    if len(scores) == 0:
-        return float("nan")
-    return float(np.count_nonzero(scores > threshold) / len(scores))
-
-
 def replay(
     stream: ReplayStream,
     strategy: Strategy,
@@ -280,48 +278,30 @@ def replay(
                 **{**decision.details, "position": index, "reason": decision.reason},
             )
 
-            # Le reentrainement ne voit que l'historique deja observe.
-            plan = strategy.propose(stream.X[: index + 1], index)
-            challenger = build_detector(model_config, features_config, seed)
-            challenger.fit(plan.train_X)
-            cost.n_retrains += 1
-            cost.retrain_seconds += challenger.fit_seconds
-
-            # Mesures de validation : sans etiquette, sur la fenetre reservee V.
-            validation_started = time.perf_counter()
-            challenger_reserved = (
-                challenger.score(plan.reserved_X)
-                if len(plan.reserved_X)
-                else np.empty(0, dtype=np.float64)
-            )
-            champion_reserved = (
-                detector.score(plan.reserved_X)
-                if len(plan.reserved_X)
-                else np.empty(0, dtype=np.float64)
-            )
-            cost.validation_seconds += time.perf_counter() - validation_started
-
-            stats = ValidationStats(
+            # Le reentrainement ne voit que l'historique deja observe. Le cycle
+            # lui-meme est dans `src/strategies/retraining.py`, parce que la
+            # boucle en ligne (M5) doit executer exactement le meme : une
+            # divergence entre les deux rendrait le chapitre 5 incomparable au
+            # chapitre 6.
+            cycle = run_retrain_cycle(
+                strategy,
+                history_X=stream.X[: index + 1],
                 position=index,
                 n_history=index + 1,
-                n_train_windows=len(plan.train_X),
-                n_reserved_windows=len(plan.reserved_X),
-                challenger_alert_rate=_alert_rate(challenger_reserved, challenger.threshold),
-                champion_alert_rate=_alert_rate(champion_reserved, detector.threshold),
-                challenger_threshold=float(challenger.threshold),
-                champion_threshold=float(detector.threshold),
-                challenger_fit_seconds=float(challenger.fit_seconds),
+                champion=detector,
+                build=lambda: build_detector(model_config, features_config, seed),
             )
-            verdict = strategy.validate(stats)
-            # Les details du plan d'entrainement puis ceux de la validation sont
-            # fusionnes dans cet ordre : `stats` est la mesure faite par le
-            # harnais et doit primer sur ce que la strategie a declare.
+            challenger, plan, verdict = cycle.challenger, cycle.plan, cycle.verdict
+            cost.n_retrains += 1
+            cost.retrain_seconds += challenger.fit_seconds
+            cost.validation_seconds += cycle.validation_seconds
+
             record(
                 "retrain_end",
                 position=index,
                 seconds=round(challenger.fit_seconds, 3),
                 threshold=challenger.threshold,
-                **{**plan.details, **stats.as_details()},
+                **cycle.details(),
             )
 
             if not verdict.promote:
