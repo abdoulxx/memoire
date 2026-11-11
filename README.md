@@ -45,6 +45,9 @@ uv run mdrift --help
 | `uv run mdrift chaos-list` | Liste les conteneurs d'injection en cours | M4 |
 | `make stop-chaos` | Arret d'urgence : tue toute injection en cours (§4.3) | M4 |
 | `uv run mdrift drift-note <type>` | Horodate une derive reelle (deploiement, changement de ressources) | M4 |
+| `uv run mdrift session-check` | Verifie que la pile est prete : cibles `up`, et chaque metrique rend une valeur | M4 |
+| `uv run mdrift session-record <run_id> --debut -3h` | Enregistre une plage de Prometheus dans `data/sessions/<run_id>.parquet` | M4 |
+| `uv run mdrift session-info <run_id>` | Decrit la session chargee : duree, fenetres, anomalies, derives, trous combles | M4 |
 
 Les commandes de calibrage (`smd-screening`, `calibration`, `calibration-k`, `calibrate-drift`)
 n'ecrivent **jamais** dans `results/summary.csv` : elles ont leur propre fichier. Une campagne de mise

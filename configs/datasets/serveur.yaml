@@ -1,0 +1,148 @@
+# Sessions enregistrees sur le serveur personnel (memoire, chapitre 5 et test
+# final du chapitre 6). Deuxieme source du §4.1 du cadrage.
+#
+# Une session, c'est une plage de temps pendant laquelle la pile de collecte a
+# tourne, des anomalies ont ete injectees (horodatees dans
+# data/labels/<run_id>.csv) et parfois une derive reelle a eu lieu (horodatee
+# dans <run_id>_drift.csv). L'enregistrement transforme cette plage en un
+# tableau regulier, une metrique par colonne, qui se rejoue exactement comme une
+# machine du SMD.
+name: serveur
+
+prometheus:
+  # Vue depuis la machine qui enregistre. La variable d'environnement
+  # PROMETHEUS_URL a la priorite sur cette valeur : le port publie est une
+  # variable depuis la phase B (PROM_PORT), parce que 9090 peut etre pris.
+  url: http://127.0.0.1:9090
+
+  # Pas de la grille, en secondes. 60 s = l'intervalle de collecte de la pile et
+  # celui du SMD : le meme code de fenetrage sert aux deux sources, et une
+  # fenetre de 10 points vaut 10 minutes dans les deux cas.
+  step_seconds: 60
+
+  # Fenetre des `rate(...)`, fixee ici et non laissee a Grafana. Grafana adapte
+  # `$__rate_interval` au zoom, ce qui est bon pour l'œil et inacceptable pour
+  # une mesure : la meme session reenregistree doit rendre les memes valeurs.
+  rate_interval: 1m
+
+  # Controle avant enregistrement : ces cibles doivent etre `up`, sinon la
+  # session aurait des colonnes trouees et il serait trop tard pour le savoir.
+  # `detection` n'y figure pas : elle n'existe qu'a partir de M5.
+  cibles_requises:
+    - prometheus
+    - app
+    - node
+    - cadvisor
+
+# Les metriques enregistrees, dans cet ordre. Une ligne = une colonne du tableau
+# = une metrique au sens du §4.4, qui portera les quatre agregats de fenetre.
+#
+# `obligatoire: true` fait echouer le chargement si la colonne est vide : mieux
+# vaut refuser une session que construire un resultat sur une metrique absente.
+# Les deux metriques par conteneur sont marquees obligatoires justement parce
+# qu'elles sont celles qui manquaient sous Docker Desktop (constat de la phase
+# B) : sur le serveur Linux elles doivent etre la, et un enregistrement qui les
+# perdrait doit s'arreter net.
+metriques:
+  - nom: cpu_hote
+    expr: '100 * (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[RATE])))'
+    obligatoire: true
+
+  - nom: memoire_hote
+    expr: "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)"
+    obligatoire: true
+
+  - nom: charge_hote
+    expr: "node_load1"
+    obligatoire: true
+
+  - nom: disque_libre_pct
+    expr: '100 * node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}'
+    obligatoire: false
+
+  - nom: reseau_entrant
+    expr: 'sum(rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br-.*"}[RATE]))'
+    obligatoire: true
+
+  - nom: reseau_sortant
+    expr: 'sum(rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br-.*"}[RATE]))'
+    obligatoire: true
+
+  # Trafic de l'appli de test. Le plan de controle est exclu partout, comme sur
+  # le tableau de bord : il ne subit pas les injections, et le compter
+  # melangerait le trafic mesure avec les sondes de sante.
+  - nom: requetes_par_s
+    expr: 'sum(rate(app_requests_total{endpoint!~"/health|/metrics|/chaos.*"}[RATE])) or vector(0)'
+    obligatoire: true
+
+  - nom: latence_p50
+    expr: 'histogram_quantile(0.50, sum by (le) (rate(app_request_duration_seconds_bucket{endpoint!~"/health|/metrics|/chaos.*"}[RATE])))'
+    obligatoire: true
+
+  - nom: latence_p95
+    expr: 'histogram_quantile(0.95, sum by (le) (rate(app_request_duration_seconds_bucket{endpoint!~"/health|/metrics|/chaos.*"}[RATE])))'
+    obligatoire: true
+
+  - nom: part_5xx
+    expr: '(sum(rate(app_requests_total{endpoint!~"/health|/metrics|/chaos.*",status=~"5.."}[RATE])) or vector(0)) / clamp_min(sum(rate(app_requests_total{endpoint!~"/health|/metrics|/chaos.*"}[RATE])), 0.001)'
+    obligatoire: true
+
+  # Les « connexions » du §4.2 : requetes en cours de traitement. C'est ce qui
+  # monte d'abord sous saturation, avant meme la latence.
+  - nom: requetes_en_vol
+    expr: "sum(app_in_flight_requests) or vector(0)"
+    obligatoire: true
+
+  - nom: cpu_appli
+    expr: 'sum(rate(container_cpu_usage_seconds_total{name="memoire-app"}[RATE]))'
+    obligatoire: true
+
+  - nom: memoire_appli
+    expr: 'sum(container_memory_working_set_bytes{name="memoire-app"})'
+    obligatoire: true
+
+  # Vue agregee des conteneurs d'injection. Elle ne sert pas de feature pour le
+  # detecteur mais de **controle du §4.3** : elle doit rester plate hors
+  # injection, et une injection doit y etre visible et bornee.
+  - nom: cpu_injection
+    expr: 'sum(rate(container_cpu_usage_seconds_total{name=~"memoire-chaos-.*"}[RATE])) or vector(0)'
+    obligatoire: false
+
+# Trous de collecte. Un trou est normal (redemarrage d'un exportateur, cible qui
+# repond trop lentement) mais une valeur inventee dans une fenetre etiquetee
+# anormale est un faux resultat : les trous courts sont donc interpoles et les
+# longs font echouer le chargement.
+trous:
+  # Nombre maximal de points consecutifs interpoles lineairement. 3 points =
+  # 3 minutes : en dessous, la metrique n'a pas le temps de changer de regime.
+  max_points_consecutifs: 3
+  # Part maximale de points interpoles sur toute la session, par metrique.
+  max_part_interpolee: 0.02
+
+# Decoupage entrainement / flux evalue. Le modele initial doit etre entraine sur
+# du comportement normal **anterieur** a tout ce qui est mesure : la session
+# commence donc par une periode calme.
+decoupage:
+  # Part initiale de la session reservee a l'entrainement.
+  part_entrainement: 0.4
+  # Le chargement echoue si une anomalie etiquetee ou une derive tombe dans la
+  # part d'entrainement. C'est volontairement bloquant : un modele initial
+  # entraine sur une anomalie ne la signalera jamais, et la comparaison des
+  # strategies qui en decoule ne veut plus rien dire.
+  refuser_anomalie_dans_entrainement: true
+
+# Etiquetage des points, a partir de data/labels/<run_id>.csv.
+etiquetage:
+  # Un point est anormal si son instant tombe dans [start_ts, end_ts], bornes
+  # incluses : a `end_ts` l'injection tournait encore.
+  bornes_incluses: true
+  # Une anomalie plus courte que le pas peut ne contenir aucun instant de la
+  # grille : elle serait alors invisible dans les donnees tout en comptant comme
+  # un evenement a detecter, ce qui ferait baisser le rappel par evenement de
+  # toutes les strategies sans qu'aucune puisse y faire quoi que ce soit. Le
+  # chargement les signale et le compte va dans les metadonnees.
+  signaler_anomalies_sans_point: true
+
+chemins:
+  sessions: data/sessions
+  etiquettes: data/labels

@@ -1243,5 +1243,192 @@ def drift_note(
     typer.echo(f"-> data/labels/{run_id}_drift.csv")
 
 
+def _reglages_serveur(config: str):
+    """Construit les reglages de la source `serveur` depuis sa configuration."""
+    from datasets.serveur.settings import ReglagesServeur
+
+    return ReglagesServeur.depuis_config(load_config(config), PROJECT_ROOT_DISPLAY)
+
+
+@app.command("session-check")
+def session_check(
+    config: str = typer.Option("datasets/serveur.yaml", help="Configuration de la source."),
+) -> None:
+    """Verifie que la pile de collecte est prete a enregistrer une session.
+
+    A lancer **avant** une session, pas apres : une cible qui n'a jamais tourne
+    coute la session entiere, et cela ne se voit qu'au moment de l'enregistrer.
+    La commande verifie aussi, metrique par metrique, que l'expression rend bien
+    une valeur maintenant : une expression juste mais qui ne correspond a aucune
+    serie est le defaut le plus couteux, parce qu'il ne se voit pas.
+    """
+    import time
+
+    import numpy as np
+
+    from datasets.serveur.recorder import ErreurSession, verifier_cibles
+    from src.serving.prometheus import ClientPrometheus, ErreurPrometheus
+
+    reglages = _reglages_serveur(config)
+    client = ClientPrometheus(reglages.url)
+    try:
+        etats = verifier_cibles(client, reglages)
+    except (ErreurSession, ErreurPrometheus) as erreur:
+        typer.echo(f"Non pret : {erreur}", err=True)
+        raise typer.Exit(code=2) from erreur
+
+    for cible in sorted(etats):
+        typer.echo(f"  cible {cible:<12} {etats[cible]}")
+
+    # Une plage de deux pas suffit : le but est de savoir si l'expression rend
+    # quelque chose, pas de mesurer quoi que ce soit.
+    fin = time.time()
+    debut = fin - 2 * reglages.pas_s
+    indisponibles: list[str] = []
+    for metrique in reglages.metriques:
+        try:
+            serie = client.interroger_plage(
+                metrique.expression(reglages.rate_interval), debut, fin, reglages.pas_s
+            )
+        except ErreurPrometheus as erreur:
+            typer.echo(f"  {metrique.nom:<18} EXPRESSION REFUSEE : {erreur}", err=True)
+            indisponibles.append(metrique.nom)
+            continue
+        if serie.part_manquante >= 1.0:
+            typer.echo(
+                f"  {metrique.nom:<18} "
+                + ("VIDE (obligatoire)" if metrique.obligatoire else "vide (optionnelle)")
+            )
+            if metrique.obligatoire:
+                indisponibles.append(metrique.nom)
+        else:
+            derniere = serie.valeurs[~np.isnan(serie.valeurs)][-1]
+            typer.echo(f"  {metrique.nom:<18} {derniere:.4g}")
+
+    if indisponibles:
+        typer.echo(
+            f"{len(indisponibles)} metrique(s) obligatoire(s) indisponible(s) : "
+            f"{indisponibles}. Enregistrer maintenant produirait une session inutilisable.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    typer.echo("Pret a enregistrer une session.")
+
+
+@app.command("session-record")
+def session_record(
+    run_id: str = typer.Argument(..., help="Identifiant de la session (nom des fichiers)."),
+    debut: str = typer.Option(..., "--debut", help="2026-11-11T08:00:00Z, -3h, ou secondes Unix."),
+    fin: str = typer.Option("-0s", "--fin", help="Idem. Defaut : maintenant."),
+    config: str = typer.Option("datasets/serveur.yaml", help="Configuration de la source."),
+    sans_controle: bool = typer.Option(
+        False,
+        "--sans-controle",
+        help="N'exige pas que les cibles soient `up` (plage deja passee).",
+    ),
+) -> None:
+    """Enregistre une plage de Prometheus dans data/sessions/<run_id>.parquet.
+
+    La session est enregistree une fois et rejouee pour chaque strategie : c'est
+    la seule facon de comparer B0, B1 et P sur des donnees reelles, puisqu'on ne
+    peut pas faire subir deux fois la meme heure a un serveur.
+    """
+    from datasets.serveur.recorder import (
+        ErreurSession,
+        enregistrer,
+        instant_depuis_texte,
+        verifier_cibles,
+    )
+    from src.serving.prometheus import ClientPrometheus, ErreurPrometheus
+
+    reglages = _reglages_serveur(config)
+    client = ClientPrometheus(reglages.url)
+    try:
+        if not sans_controle:
+            verifier_cibles(client, reglages)
+        session = enregistrer(
+            client,
+            reglages,
+            debut=instant_depuis_texte(debut),
+            fin=instant_depuis_texte(fin),
+            run_id=run_id,
+        )
+    except (ErreurSession, ErreurPrometheus) as erreur:
+        typer.echo(f"Session non enregistree : {erreur}", err=True)
+        raise typer.Exit(code=2) from erreur
+
+    typer.echo(
+        f"{session.n_points} points au pas de {reglages.pas_s}s "
+        f"({session.n_points * reglages.pas_s / 3600:.2f} h) -> {session.donnees.name}"
+    )
+    troues = {nom: part for nom, part in session.parts_manquantes.items() if part > 0}
+    for nom in sorted(troues, key=lambda n: -troues[n]):
+        typer.echo(f"  {nom:<18} {troues[nom]:.1%} de points manquants")
+    if not troues:
+        typer.echo("  aucun trou de collecte.")
+    typer.echo(f"Metadonnees : {session.metadonnees.name}")
+
+
+@app.command("session-info")
+def session_info(
+    run_id: str = typer.Argument(..., help="Session a decrire."),
+    config: str = typer.Option("datasets/serveur.yaml", help="Configuration de la source."),
+    features: str = typer.Option("features.yaml", help="Configuration des features."),
+) -> None:
+    """Charge une session et decrit le flux qu'elle produit (§11, point 5).
+
+    Rend la description des donnees reelles que le memoire demande : duree,
+    nombre de fenetres, anomalies etiquetees, derives horodatees, et ce que le
+    chargement a du corriger ou signaler.
+    """
+    from datasets.serveur.loader import charger_session
+    from datasets.serveur.recorder import ErreurSession
+    from src.evaluation.streams import build_server_stream
+
+    reglages = _reglages_serveur(config)
+    try:
+        session = charger_session(run_id, reglages)
+    except ErreurSession as erreur:
+        typer.echo(f"Session illisible : {erreur}", err=True)
+        raise typer.Exit(code=2) from erreur
+
+    flux = build_server_stream(session, load_config(features))
+    n_points = len(session.train) + len(session.test)
+    typer.echo(f"Session {run_id} : {n_points} points, {session.n_features} metriques")
+    typer.echo(
+        f"  duree           {session.duration_hours(n_points):.2f} h "
+        f"au pas de {session.sampling_interval_seconds}s"
+    )
+    typer.echo(f"  entrainement    {len(session.train)} points (ni anomalie, ni derive)")
+    typer.echo(
+        f"  flux evalue     {len(session.test)} points, {len(flux)} fenetres, "
+        f"{session.anomaly_rate:.2%} de points anormaux"
+    )
+    typer.echo(f"  evenements      {len(session.events)} anomalie(s) etiquetee(s)")
+    for evenement in session.events:
+        typer.echo(f"    points {evenement.start}-{evenement.end} ({evenement.length} point(s))")
+    if flux.drift_index is None:
+        typer.echo("  derive          aucune (scenario `none`)")
+    else:
+        typer.echo(
+            f"  derive          point {flux.drift_index} du flux evalue "
+            f"(fenetre {flux.drift_window()}), scenario `{flux.scenario}`"
+        )
+        for derive in session.derives:
+            typer.echo(f"    {derive['ts']} {derive['type']} : {derive['description']}")
+
+    interpolees = {nom: part for nom, part in session.parts_interpolees.items() if part > 0}
+    for nom in sorted(interpolees, key=lambda n: -interpolees[n]):
+        typer.echo(f"  interpole       {nom:<18} {interpolees[nom]:.2%}")
+    if session.anomalies_sans_point:
+        typer.echo(
+            f"  ATTENTION       {len(session.anomalies_sans_point)} anomalie(s) plus courte(s) "
+            "que le pas : aucun point de grille ne tombe dedans, donc aucune strategie "
+            "ne peut les detecter."
+        )
+        for ligne in session.anomalies_sans_point:
+            typer.echo(f"    {ligne['start_ts']} -> {ligne['end_ts']} {ligne.get('type', '?')}")
+
+
 if __name__ == "__main__":
     app()

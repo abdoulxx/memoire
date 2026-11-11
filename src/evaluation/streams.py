@@ -18,12 +18,18 @@ from __future__ import annotations
 
 from typing import Any
 
+from datasets.serveur.loader import SessionServeur
 from datasets.smd.loader import SMDMachine, events_from_label
 from scenarios.injection import DriftScenario, inject, load_scenario
 from src.evaluation.replay import ReplayStream
 from src.features.windowing import make_windows
 
 NO_DRIFT = "none"
+
+# Les sessions du serveur ne portent pas S1-S4 : la derive y est reelle. Le nom
+# est explicite dans `results/summary.csv` pour que les deux sources ne se
+# melangent pas dans les tableaux du chapitre 6.
+SCENARIO_REEL = "reel"
 
 
 def resolve_scenario(scenario: str | DriftScenario) -> DriftScenario | None:
@@ -102,5 +108,60 @@ def build_smd_stream(
         sampling_interval_seconds=machine.sampling_interval_seconds,
         drift_index=drift_index,
         drift_end_index=drift_end_index,
+        drift_metadata=drift_metadata,
+    )
+
+
+def build_server_stream(
+    session: SessionServeur,
+    features_config: dict[str, Any],
+) -> ReplayStream:
+    """Construit le flux d'une session enregistree sur le serveur.
+
+    Aucun scenario n'est resolu ici, et c'est le point de la source `serveur` :
+    la derive n'est pas injectee, elle a **eu lieu** (deploiement, changement de
+    ressources, montee de trafic) et son instant est lu dans
+    `data/labels/<run_id>_drift.csv`. Le harnais de rejeu recoit donc le meme
+    objet que pour le SMD, avec une verite terrain de derive qui vient du terrain
+    et non d'une transformation.
+
+    Le nom du scenario vaut `reel` quand une derive est horodatee et `none`
+    sinon : `results/summary.csv` garde ainsi une colonne `scenario` lisible, ou
+    les lignes du serveur ne se confondent pas avec S1-S4.
+    """
+    train = make_windows(session.train, features_config)
+    test = make_windows(session.test, features_config, label=session.test_label)
+    if test.y is None:  # pragma: no cover - make_windows garantit y avec un label
+        raise RuntimeError("Le flux de test doit etre etiquete.")
+
+    drift_index = session.drift_index
+    drift_metadata: dict[str, Any] | None = None
+    if drift_index is not None:
+        drift_metadata = {
+            "origine": "reelle",
+            "n_derives": len(session.derives),
+            "derives": session.derives,
+        }
+
+    return ReplayStream(
+        source="serveur",
+        # La session tient la place de la machine : une session est a la source
+        # `serveur` ce qu'une machine est au SMD, et l'arborescence de
+        # `results/runs/` n'a pas a changer de forme.
+        machine=session.run_id,
+        scenario=SCENARIO_REEL if drift_index is not None else NO_DRIFT,
+        train_X=train.X,
+        X=test.X,
+        y=test.y,
+        end_index=test.end_index,
+        events=session.events,
+        window_size=int(features_config["window_size"]),
+        stride=int(features_config["stride"]),
+        sampling_interval_seconds=session.sampling_interval_seconds,
+        drift_index=drift_index,
+        # Une derive reelle n'a pas de fin : un deploiement ne se replie pas.
+        # `drift_end_index` reste None, ce que le harnais interprete deja comme
+        # « le regime derive court jusqu'a la fin du flux ».
+        drift_end_index=None,
         drift_metadata=drift_metadata,
     )

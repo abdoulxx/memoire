@@ -41,7 +41,7 @@ la main.
 | A | Appli de test FastAPI : charge simulee, endpoints de panne (latence, 5xx), metriques Prometheus, version deployee | **terminee** le 28/10 a 19h20 (13 tests, image construite et sondee) |
 | B | Docker Compose complet : Prometheus + scrape, node_exporter, cAdvisor, Grafana provisionne (datasource + dashboard JSON) | **terminee** le 28/10 a 20h05 (pile lancee, 5 cibles collectees, 12 tests) |
 | C | Injecteur de pannes : conteneurs stress-ng dedies et limites, allowlist par prefixe, `make stop-chaos`, Locust, ecriture des labels horodates | **terminee** le 29/10 a 08h40 (39 tests, les 5 types injectes pour de vrai) |
-| D | Enregistrement des sessions : API Prometheus `query_range` -> Parquet, chargeur de session branche sur les features existantes | a faire |
+| D | Enregistrement des sessions : API Prometheus `query_range` -> Parquet, chargeur de session branche sur les features existantes | **terminee** le 11/11 (289 tests, alignement temporel verifie) |
 | E | Tests, D35+ dans `decisions.md`, entree M4 de `journal.md`, suppression de ce fichier | a faire |
 
 ## Commandes de reprise
@@ -313,3 +313,100 @@ make stop-chaos                      # arret d'urgence du §4.3
 uv run mdrift drift-note deploiement "appli de test 1.1.0" --run-id essai
 cat data/labels/essai.csv data/labels/essai_drift.csv
 ```
+
+## Resultats de la phase D (enregistrement et rejeu des sessions)
+
+Objet de la phase : transformer une plage de temps vecue par le serveur en un
+objet de **la meme forme qu'une machine du SMD**, pour que le harnais de rejeu de
+M2 n'ait rien a savoir de la source du flux. Une session est enregistree une fois
+et rejouee pour chaque strategie : c'est la seule facon de comparer B0, B1 et P
+sur donnees reelles, puisqu'on ne peut pas faire subir deux fois la meme heure a
+un serveur.
+
+| Fichier | Role |
+|---|---|
+| `src/serving/prometheus.py` | Le seul endroit du depot qui parle a Prometheus. Rend une expression PromQL sur une grille d'instants connue d'avance. Reutilise tel quel par la boucle en ligne de M5 |
+| `configs/datasets/serveur.yaml` | 14 metriques (nom, expression, obligatoire), pas de 60 s, fenetre de `rate`, cibles requises, tolerances de trous, decoupage, regles d'etiquetage |
+| `datasets/serveur/settings.py` | Objet de reglages partage par l'enregistreur et le chargeur : ils doivent s'accorder sur le pas, l'ordre des metriques et les tolerances |
+| `datasets/serveur/recorder.py` | Ecrit `data/sessions/<run_id>.parquet` + son JSON de metadonnees |
+| `datasets/serveur/loader.py` | Relit le Parquet, comble les trous courts, etiquette les points, decoupe train/test, situe la derive |
+| `src/evaluation/streams.py` | `build_server_stream` : un `ReplayStream` de source `serveur` |
+| `src/cli.py` | `session-check`, `session-record`, `session-info` |
+
+### Commandes
+
+```bash
+uv run mdrift session-check                       # avant la session, pas apres
+uv run mdrift session-record essai --debut -3h    # -> data/sessions/essai.parquet
+uv run mdrift session-info essai                  # description pour le §11, point 5
+```
+
+### Les cinq decisions de la phase, et le defaut que chacune ecarte
+
+1. **La grille est faite de multiples du pas, et construite avant la requete.**
+   `query_range` evalue a `start`, `start + step`, ... : si `start` est l'heure a
+   laquelle la commande a ete lancee, la grille en depend, et deux
+   enregistrements de la meme plage ne tombent pas sur les memes instants. Au pas
+   de la minute, quelques secondes suffisent a deplacer une fenetre d'un cran par
+   rapport a une anomalie etiquetee. Les instants sont arrondis (debut vers le
+   haut, fin vers le bas) et la grille n'est jamais deduite de la reponse.
+2. **Un trou reste un trou dans le Parquet.** Quand une cible n'a pas repondu,
+   Prometheus renvoie simplement une reponse plus courte, sans rien qui le
+   signale. Les valeurs absentes sont posees sur la grille en `NaN` et le Parquet
+   les garde : il est la mesure, pas son interpretation. C'est le **chargeur** qui
+   interpole, sous les tolerances de `configs/datasets/serveur.yaml` (3 points
+   consecutifs, 2 % de la session), et il **echoue** au-dela plutot que
+   d'inventer un regime.
+3. **Les bornes de l'anomalie sont incluses.** A `end_ts`, l'injection tournait
+   encore. Une anomalie qui commence entre deux points de grille marque le point
+   **suivant** : arrondir vers le bas marquerait un point ou rien ne se passait.
+4. **Une anomalie plus courte que le pas est signalee.** Elle serait invisible
+   dans les donnees tout en comptant comme un evenement a detecter, ce qui ferait
+   baisser le rappel par evenement de **toutes** les strategies sans qu'aucune
+   puisse y faire quoi que ce soit. `session-info` l'affiche en ATTENTION.
+5. **Une anomalie ou une derive dans la part d'entrainement fait echouer le
+   chargement.** Un modele initial entraine sur une anomalie ne la signalera
+   jamais, et la comparaison des strategies qui en decoule ne veut plus rien
+   dire. Volontairement bloquant (`refuser_anomalie_dans_entrainement: true`).
+
+### Deux refus explicites
+
+- **Une expression qui rend plusieurs series est refusee**, avec les etiquettes
+  des series en cause. Prendre la premiere serait un choix arbitraire fait par la
+  bibliotheque a la place de l'experimentateur. Zero serie, en revanche, est
+  legitime (aucune 5xx sur la plage) : c'est le chargeur qui tranche, parce que
+  lui seul sait si la colonne est obligatoire.
+- **La fenetre des `rate(...)` est fixee dans la configuration**, pas laissee a
+  `$__rate_interval`. Grafana l'adapte au zoom, ce qui est bon pour l'œil et
+  inacceptable pour une mesure : la meme session reenregistree doit rendre les
+  memes valeurs.
+
+### Defaut trouve par les tests
+
+`float("+Inf")` et `float("NaN")` **reussissent** : le code comptait sur une
+exception pour ecarter les valeurs non finies que Prometheus rend en texte, et
+les laissait donc passer. Un `histogram_quantile` sur un bucket vide rend `NaN`,
+une part calculee sur un denominateur nul rend `+Inf` : un seul `inf` dans une
+colonne traverse la normalisation et rend la session entiere inexploitable, sans
+que rien ne le signale. Les valeurs non finies comptent desormais comme des
+points absents (`math.isfinite`), ce qui est le meme traitement qu'un trou.
+
+### Tests
+
+`tests/test_prometheus.py` (12) et `tests/test_serveur_session.py` (38).
+289 tests au total. Les tests d'alignement temporel sont les plus importants de
+la phase : ils fixent qu'une anomalie de `T+605` a `T+700` marque le point `T+660`
+et lui seul, qu'une anomalie de 35 s ne marque rien mais est signalee, et qu'une
+fenetre est positive des qu'elle contient un point anormal — la meme regle que
+pour le SMD, sans quoi les deux sources ne sont pas comparables.
+
+### Ce qui reste a Sidy sur le serveur Linux
+
+- Verifier `session-check` sur la pile reelle : c'est la commande qui dira si les
+  14 expressions correspondent a quelque chose. Les deux metriques par conteneur
+  (`cpu_appli`, `memoire_appli`) sont marquees **obligatoires** precisement parce
+  qu'elles manquaient sous Docker Desktop ; un enregistrement qui les perdrait
+  doit s'arreter net.
+- Enregistrer les vraies sessions. Une session utile commence par une periode
+  calme (au moins 40 % du total, sans anomalie ni derive) avant la premiere
+  injection.
