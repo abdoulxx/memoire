@@ -30,6 +30,34 @@ dev = [
     "pytest>=8.3,<9.0",
     "ruff>=0.8,<0.13",
     { include-group = "serveur" },
+    { include-group = "mlops" },
+]
+
+# Suivi et registre de modeles (M5). Groupe a part, et volontairement : mlflow
+# tire une cinquantaine de paquets (serveur web, SQLAlchemy, Alembic, client
+# Docker) dont aucun ne sert a reproduire les chiffres des chapitres 6. Une
+# installation qui ne veut que rejouer le SMD doit rester legere. `dev` l'inclut
+# pour que les tests du registre tournent en CI.
+#
+# Verifie a l'ajout : mlflow 2.22 n'a **pas** fait bouger numpy (2.1.3),
+# pandas (2.2.3) ni scikit-learn (1.6.1). C'etait la condition de l'ajout, pour
+# la meme raison que D24 : tous les resultats deja commites ont ete mesures sous
+# ces versions, et les faire bouger apres M3 rendrait `results/summary.csv`
+# irreproductible.
+mlops = [
+    # Version calee, pas bornee largement : l'image officielle publiee la plus
+    # recente est `ghcr.io/mlflow/mlflow:v2.22.4` (verifie sur le registre ghcr,
+    # il n'y a pas de v2.22.5). Client et serveur partagent le meme schema de
+    # base : laisser le client prendre de l'avance sur l'image ferait migrer la
+    # base sqlite par celui des deux qui l'ouvre le premier. Mettre a jour les
+    # deux ensemble, ou aucun.
+    "mlflow==2.22.4",
+    # Borne constatee, pas preventive : mlflow 2.22 importe
+    # `FallbackAsyncAdaptedQueuePool` de `sqlalchemy.pool`, qui n'existe plus en
+    # SQLAlchemy 2.1. Le resolveur installe 2.1 sans rien dire, et le registre
+    # echoue a la premiere requete avec une ImportError que rien ne relie a
+    # mlflow. mlflow ne borne pas lui-meme sa dependance ; nous la bornons.
+    "sqlalchemy>=2.0,<2.1",
 ]
 
 # Briques du mode en ligne et de l'appli de test (M4, M5). Groupe separe du socle

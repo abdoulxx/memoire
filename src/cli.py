@@ -1430,5 +1430,138 @@ def session_info(
             typer.echo(f"    {ligne['start_ts']} -> {ligne['end_ts']} {ligne.get('type', '?')}")
 
 
+def _registre(serving: str):
+    """Construit l'acces au registre depuis `configs/serving.yaml`."""
+    from src.tracking.registry import RegistreModeles, ReglagesRegistre
+
+    return RegistreModeles(ReglagesRegistre.depuis_config(load_config(serving)))
+
+
+@app.command("registry-init")
+def registry_init(
+    run_id: str = typer.Argument(..., help="Session enregistree servant a l'entrainement initial."),
+    config: str = typer.Option("datasets/serveur.yaml", help="Configuration de la source."),
+    features: str = typer.Option("features.yaml", help="Configuration des features."),
+    model: str = typer.Option("model.yaml", help="Configuration du modele."),
+    serving: str = typer.Option("serving.yaml", help="Configuration du mode en ligne."),
+    seed: int = typer.Option(42, help="Seed du modele initial."),
+    sans_promotion: bool = typer.Option(
+        False,
+        "--sans-promotion",
+        help="Enregistre la version sans lui donner l'alias champion.",
+    ),
+) -> None:
+    """Entraine le modele initial sur la part calme d'une session et le promeut champion.
+
+    Le service en ligne refuse de demarrer sans champion : il faut bien que le
+    premier modele vienne de quelque part, et il doit venir de la **meme** part
+    d'entrainement que celle qu'utiliserait un rejeu de cette session. C'est ce
+    qui rend comparables la demonstration du chapitre 5 et les chiffres du
+    chapitre 6 : meme session, meme part calme, meme code d'entrainement.
+    """
+    from datasets.serveur.loader import charger_session
+    from datasets.serveur.recorder import ErreurSession
+    from src.evaluation.streams import build_server_stream
+    from src.features.signature import signature_depuis_config
+    from src.models.isolation_forest import build_detector
+    from src.tracking.registry import ErreurRegistre
+
+    features_config = load_config(features)
+    reglages = _reglages_serveur(config)
+    try:
+        session = charger_session(run_id, reglages)
+    except ErreurSession as erreur:
+        typer.echo(f"Session illisible : {erreur}", err=True)
+        raise typer.Exit(code=2) from erreur
+
+    flux = build_server_stream(session, features_config)
+    signature = signature_depuis_config(
+        session.metric_names, features_config, session.sampling_interval_seconds
+    )
+    if signature.n_features != flux.train_X.shape[1]:
+        # Garde-fou de coherence interne : si la signature deduite de la
+        # configuration ne decrit pas la matrice que `make_windows` vient de
+        # produire, c'est le calcul de signature qui est faux, et l'enregistrer
+        # rendrait tous les controles ulterieurs inutiles.
+        typer.echo(
+            f"Incoherence interne : signature de {signature.n_features} features pour une "
+            f"matrice de {flux.train_X.shape[1]} colonnes.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    detecteur = build_detector(load_config(model), features_config, seed)
+    detecteur.fit(flux.train_X)
+    typer.echo(
+        f"Modele initial entraine sur {detecteur.n_train_windows} fenetres "
+        f"({len(session.train)} points calmes de {run_id}), "
+        f"seuil {detecteur.threshold:.4f}, {detecteur.fit_seconds:.2f}s"
+    )
+
+    registre = _registre(serving)
+    try:
+        version = registre.enregistrer(
+            detecteur,
+            signature=signature,
+            raison="initial_fit",
+            parametres={"seed": seed, "source": "serveur", "session": run_id},
+            metriques={"n_train_points": float(len(session.train))},
+            tags={"session": run_id, "source": "serveur"},
+        )
+        typer.echo(f"Enregistre : {version.resume()}")
+        if not sans_promotion:
+            version = registre.promouvoir(version)
+            typer.echo(f"Promu : alias `{registre.reglages.alias}` -> version {version.version}")
+    except ErreurRegistre as erreur:
+        typer.echo(f"Registre : {erreur}", err=True)
+        raise typer.Exit(code=2) from erreur
+
+
+@app.command("registry-info")
+def registry_info(
+    serving: str = typer.Option("serving.yaml", help="Configuration du mode en ligne."),
+    limite: int = typer.Option(10, help="Nombre de versions a lister."),
+) -> None:
+    """Dit quel modele est en service et liste les versions enregistrees.
+
+    C'est la commande a lancer avant une demonstration : un service qui tourne
+    sur un champion different de celui qu'on croit rend les captures du
+    chapitre 5 inexploitables.
+    """
+    from src.tracking.registry import ErreurRegistre
+
+    registre = _registre(serving)
+    typer.echo(f"Registre {registre.reglages.tracking_uri}, modele {registre.reglages.model_name}")
+    try:
+        courant = registre.champion()
+        versions = registre.historique(limite)
+    except ErreurRegistre as erreur:
+        typer.echo(f"Registre : {erreur}", err=True)
+        raise typer.Exit(code=2) from erreur
+
+    if courant is None:
+        typer.echo(
+            f"  aucun modele ne porte l'alias `{registre.reglages.alias}` : le service "
+            "refusera de demarrer. Lancer `mdrift registry-init <run_id>`."
+        )
+    else:
+        typer.echo(f"  en service      {courant.resume()}")
+        if courant.signature is not None:
+            typer.echo(
+                f"  features        {courant.signature.n_features} colonnes, "
+                f"empreinte {courant.signature.empreinte}, "
+                f"fenetre {courant.signature.window_size} x pas "
+                f"{courant.signature.sampling_interval_seconds}s"
+            )
+
+    typer.echo(f"  versions        {len(versions)}")
+    for version in versions:
+        marque = "*" if courant is not None and version.version == courant.version else " "
+        typer.echo(
+            f"   {marque} v{version.version:<4} {version.cree_le}  {version.raison:<12} "
+            f"seuil={version.threshold:.4f} n_train={version.n_train_windows}"
+        )
+
+
 if __name__ == "__main__":
     app()

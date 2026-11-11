@@ -1,0 +1,34 @@
+# Mode en ligne (jalon M5). Rien de ce fichier ne sert au rejeu des chapitres 6 :
+# les resultats du memoire se reproduisent sans qu'aucune de ces valeurs soit
+# lue. Inversement, le service en ligne n'introduit **aucun** parametre de
+# detection qui lui soit propre : le modele vient de configs/model.yaml, les
+# features de configs/features.yaml, la derive de configs/drift.yaml et la
+# strategie de configs/strategies/proposed.yaml. Ce qui est ici est de
+# l'exploitation : ou lire, ou ecrire, a quel rythme, a qui parler.
+
+name: serving
+
+registry:
+  # Registre de modeles. L'URL depend du deploiement : MLFLOW_TRACKING_URI a la
+  # priorite sur cette valeur, comme PROMETHEUS_URL pour la source serveur.
+  #
+  # Un chemin sqlite fonctionne aussi (sqlite:///mlflow.db) et suffit a tout
+  # tester sans serveur. Le registre de modeles — donc l'alias `champion` —
+  # demande un backend de base de donnees : un simple dossier `mlruns/` ne
+  # suffit pas, et c'est la raison du service `mlflow` du docker-compose.
+  tracking_uri: http://127.0.0.1:5000
+
+  experiment: detection-anomalies
+  model_name: detecteur-anomalies
+
+  # L'alias qui designe le modele en service (§6, point 5). Le deplacer **est**
+  # la mise en service : il n'y a pas d'autre endroit ou cette information soit
+  # vraie.
+  alias: champion
+
+  # Bornes des requetes au registre. Par defaut mlflow attend 120 s et retente
+  # plusieurs fois : un registre tombe bloquerait la boucle plusieurs minutes et
+  # lui ferait manquer des fenetres, alors que l'intervalle de collecte est
+  # d'une minute. Mieux vaut echouer vite, journaliser, et garder le champion.
+  timeout_s: 10
+  max_retries: 1

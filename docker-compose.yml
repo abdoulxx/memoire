@@ -1,4 +1,4 @@
-# Pile de collecte et de visualisation du jalon M4 (phase B).
+# Pile de collecte, de visualisation et de suivi (M4 phase B, M5 phase A).
 #
 #   cp .env.example .env   # puis renseigner GRAFANA_ADMIN_PASSWORD
 #   docker compose up -d
@@ -22,8 +22,9 @@
 #     demande de surveiller l'espace disque ; une borne de taille est plus sure
 #     qu'une surveillance, parce qu'elle n'a pas besoin qu'on regarde.
 #
-#  4. Les trois ports publies sont des variables (APP_PORT, PROM_PORT,
-#     GRAFANA_PORT). Un serveur fait tourner autre chose que cette experience :
+#  4. Les quatre ports publies sont des variables (APP_PORT, PROM_PORT,
+#     GRAFANA_PORT, MLFLOW_PORT). Un serveur fait tourner autre chose que cette
+#     experience :
 #     a la premiere mise en route, le port 8000 etait deja pris par une
 #     application sans rapport. Le §4.3 interdit de toucher aux conteneurs des
 #     autres, donc c'est la pile du memoire qui se decale.
@@ -147,7 +148,8 @@ services:
       # restent vides sur un poste Windows. Desactiver `disk` ne change rien,
       # la recherche a lieu a l'enregistrement du conteneur. Sur un hote Linux
       # avec le magasin d'images par defaut, le chemin existe. A verifier au
-      # premier deploiement sur le serveur ; c'est note dans docs/etat_m4.md.
+      # premier deploiement sur le serveur ; c'est note dans l'entree M4 de
+      # docs/journal.md.
       - --disable_metrics=disk,advtcp,cpu_topology,cpuset,hugetlb,memory_numa,process,referenced_memory,resctrl,sched,tcp,udp
     volumes:
       - /:/rootfs:ro
@@ -201,6 +203,73 @@ services:
     networks:
       - memoire
 
+  # Suivi et registre de modeles (jalon M5). Le registre repond a une question
+  # que le journal d'evenements ne tranche pas : quel modele, exactement, a
+  # produit cette alerte ? Et il porte l'alias `champion`, qui **est** la mise en
+  # service — il n'y a pas d'autre endroit ou cette information soit vraie.
+  #
+  # Quatre points qui ne vont pas de soi :
+  #
+  #  1. Backend sqlite, pas un dossier `mlruns/`. Le registre de modeles — donc
+  #     l'alias — demande une base de donnees ; un magasin de fichiers ne le
+  #     fournit pas. Un seul utilisateur et quelques dizaines de versions par
+  #     campagne : sqlite suffit, et ajouter un PostgreSQL serait exactement le
+  #     genre de sur-construction que la regle n° 1 du cadrage interdit.
+  #  2. `--serve-artifacts` avec une destination **interne** au conteneur. Sans
+  #     cela, le serveur renvoie au client un chemin de systeme de fichiers qui
+  #     n'existe que dans le conteneur, et le telechargement d'un modele depuis
+  #     l'hote echoue sans que rien n'indique pourquoi. Avec, les artefacts
+  #     passent par HTTP sous le schema `mlflow-artifacts:/` et le service de
+  #     detection n'a besoin que de l'URL. C'est aussi pourquoi
+  #     `registry.artifact_location` reste vide dans configs/serving.yaml.
+  #  3. La version de l'image est celle du client Python (mlflow 2.22.4, epinglee
+  #     dans pyproject.toml). Les deux partagent le schema de la base : les faire
+  #     diverger laisserait celui des deux qui ouvre la base la migrer pour
+  #     l'autre.
+  #  4. Deux travailleurs gunicorn et un delai court. Le registre est sollicite
+  #     une fois par fenetre au plus ; en revanche, la boucle en ligne tourne a
+  #     la minute, et un serveur qui met deux minutes a repondre lui ferait
+  #     manquer des fenetres. Les bornes du cote client sont dans
+  #     configs/serving.yaml (timeout_s, max_retries).
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.22.4
+    container_name: memoire-mlflow
+    restart: unless-stopped
+    command:
+      - mlflow
+      - server
+      # 0.0.0.0 **dans** le conteneur ; la publication du port, elle, est liee a
+      # ${BIND_ADDR} comme tout le reste de la pile.
+      - --host=0.0.0.0
+      - --port=5000
+      - --backend-store-uri=sqlite:////mlflow/mlflow.db
+      - --serve-artifacts
+      - --artifacts-destination=/mlflow/artefacts
+      - --workers=2
+      - --gunicorn-opts=--timeout 60
+    volumes:
+      - mlflow-data:/mlflow
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${MLFLOW_PORT:-5000}:5000"
+    # Le registre tient la tracabilite de toute la campagne en ligne : il est
+    # borne pour qu'une fuite de son cote n'emporte pas le serveur, mais plus
+    # large que l'appli de test, qui elle est faite pour saturer.
+    cpus: ${MLFLOW_CPUS:-1.0}
+    mem_limit: ${MLFLOW_MEMORY:-1g}
+    healthcheck:
+      # L'image n'embarque pas curl ; elle embarque Python, par construction.
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    labels:
+      memoire.role: suivi
+    networks:
+      - memoire
+
 networks:
   memoire:
     name: memoire
@@ -211,3 +280,5 @@ volumes:
     name: memoire-prometheus-data
   grafana-data:
     name: memoire-grafana-data
+  mlflow-data:
+    name: memoire-mlflow-data

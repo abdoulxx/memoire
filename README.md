@@ -48,6 +48,8 @@ uv run mdrift --help
 | `uv run mdrift session-check` | Verifie que la pile est prete : cibles `up`, et chaque metrique rend une valeur | M4 |
 | `uv run mdrift session-record <run_id> --debut -3h` | Enregistre une plage de Prometheus dans `data/sessions/<run_id>.parquet` | M4 |
 | `uv run mdrift session-info <run_id>` | Decrit la session chargee : duree, fenetres, anomalies, derives, trous combles | M4 |
+| `uv run mdrift registry-init <run_id>` | Entraine le modele initial sur la part calme d'une session et le promeut `champion` | M5 |
+| `uv run mdrift registry-info` | Dit quel modele est en service, avec sa signature de features et l'historique des versions | M5 |
 
 Les commandes de calibrage (`smd-screening`, `calibration`, `calibration-k`, `calibrate-drift`)
 n'ecrivent **jamais** dans `results/summary.csv` : elles ont leur propre fichier. Une campagne de mise

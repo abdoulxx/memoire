@@ -139,3 +139,39 @@ def test_aucun_secret_ni_nom_d_hote_dans_la_pile() -> None:
             if nue.startswith("#") or not sensible.search(nue):
                 continue
             assert "${" in nue, f"{chemin.name}:{numero} : {nue}"
+
+
+def test_le_registre_sert_les_artefacts_par_http() -> None:
+    # Sans `--serve-artifacts`, le serveur renvoie au client un chemin de systeme
+    # de fichiers qui n'existe que dans le conteneur : `registry.charger` echoue
+    # a telecharger le modele, et le service refuse de demarrer sans que rien
+    # n'indique la cause. C'est le defaut le plus facile a introduire ici.
+    commande = " ".join(_lire(COMPOSE)["services"]["mlflow"]["command"])
+    assert "--serve-artifacts" in commande
+    assert "--artifacts-destination=" in commande
+    assert "--no-serve-artifacts" not in commande
+
+
+def test_le_registre_a_un_backend_de_base_de_donnees() -> None:
+    # L'alias `champion` releve du model registry, qui n'existe pas sur un simple
+    # magasin de fichiers : un `--backend-store-uri` pointant un dossier ferait
+    # echouer toute promotion.
+    commande = " ".join(_lire(COMPOSE)["services"]["mlflow"]["command"])
+    assert "--backend-store-uri=sqlite:" in commande
+
+
+def test_la_version_de_l_image_mlflow_est_celle_du_client_python() -> None:
+    # Client et serveur partagent le schema de la base : les faire diverger
+    # laisserait celui des deux qui ouvre la base la migrer pour l'autre.
+    image = _lire(COMPOSE)["services"]["mlflow"]["image"]
+    epinglee = image.rsplit(":v", 1)[1]
+    pyproject = (RACINE / "pyproject.toml").read_text(encoding="utf-8")
+    assert f'"mlflow=={epinglee}"' in pyproject, image
+
+
+def test_le_registre_n_impose_aucun_emplacement_d_artefacts_au_serveur() -> None:
+    # `artifact_location` ne vaut que pour un backend sqlite local (tests, mise
+    # au point). Avec le serveur, c'est lui qui decide, et le renseigner cote
+    # client court-circuiterait le service d'artefacts.
+    registre = _lire(RACINE / "configs/serving.yaml")["registry"]
+    assert not registre.get("artifact_location")
