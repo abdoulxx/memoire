@@ -446,11 +446,84 @@ muet, et une URL par defaut qui pointait vers un service tiers. A l'inverse, le 
 Etat du code : **289 tests passent** (175 a la fin de M3), `ruff check` et `ruff format --check` sans
 remarque sur 85 fichiers.
 
-## Prochaine etape : M5
-Boucle en ligne : service de detection qui lit Prometheus chaque minute, applique le champion,
-surveille la derive et execute la strategie P ; registre MLflow avec l'alias `champion` ; exporter
-Prometheus (score d'anomalie, alertes, signal et confirmation de derive, version du modele en
-service, `window_ms_mean` et `window_ms_p95` du §9) ; tableau de bord Grafana branche sur ces
-metriques ; notifications Telegram regroupees a un message par minute et par type. Livrable memoire :
-les captures du pipeline MLOps du chapitre 5. Le jeton Telegram et l'identifiant de conversation
-passent par l'environnement, jamais par le depot.
+## 2026-11-11 / 2026-11-12 — M5 : boucle en ligne, registre de modeles, exporter, tableaux de bord, notifications
+Debut 11/11, fin 12/11. Cinq phases, push a la fin de chacune. M5 realise le **mode en ligne** du §2
+avec **le meme code** que le mode rejeu : `src/features/`, `src/models/`, `src/drift/` et
+`src/strategies/` ne sont pas reecrits, et le cycle de reentrainement est desormais un module partage
+(`src/strategies/retraining.py`) auquel le harnais de rejeu delegue. Une divergence entre les deux
+modes rendrait le chapitre 5 incomparable au chapitre 6, qui est tout l'interet d'avoir les deux.
+
+- **Phase A — registre de modeles** (11/11, 39 tests) : wrapper MLflow (tracking + registry, alias
+  `champion`), service `mlflow` dans Compose, et le **contrat de features** condense en une empreinte
+  sha256 enregistree avec chaque version et **verifiee au chargement** (D39). L'artefact est le
+  detecteur entier — standardisation, foret, seuil — dans le meme joblib que relit le rejeu. Si le
+  registre refuse une promotion, le challenger est jete et le champion reste en service : le registre
+  fait foi. Commandes `registry-init` et `registry-info` ; tests contre un vrai registre sqlite.
+- **Phase B — boucle de detection en ligne** (11/11, 36 tests) : un tick lit les nouveaux points de
+  Prometheus, construit les fenetres completes, score avec le champion, consulte la strategie, et
+  reentraine / valide / promeut quand elle le demande. Quatre regles non evidentes et non rattrapables
+  (D40) : le **prechargement ne score pas**, la **reference du moniteur vient du registre**, un point
+  manquant **au bord** fait sauter la fenetre au lieu d'etre extrapole, et le registre fait foi. Le
+  journal JSON lignes du §9 **refuse** tout nom d'evenement hors vocabulaire. `window_ms_mean` et
+  `window_ms_p95` sont enfin mesures par fenetre, ce que le rejeu par blocs ne peut pas donner : ce
+  sont eux qui repondent aux indicateurs I7 / T1 du chapitre 2.
+- **Phase C — exporter Prometheus et tableau de bord du pipeline** (12/11, 47 tests) : `/metrics`
+  ouvert **avant** le premier tick (un service qui detecte sans etre observable ne produit aucune
+  capture), conteneur `detection` sans aucun port publie, journal sur volume nomme. Trois invariants
+  (D41) : l'exporter **s'abonne au journal** au lieu de compter en parallele, **toutes les series
+  valent zero** des la construction, et la fraicheur exposee est **l'instant de la fenetre** et non
+  celui du scrape. Second tableau de bord `pipeline.json` (15 panneaux) : `infrastructure.json` montre
+  la cause, `pipeline.json` l'effet. Les tests les plus utiles comparent le tableau de bord a
+  l'exporter — chaque serie `mdrift_*` citee en PromQL doit exister dans le rendu — et verifient que
+  `prometheus.yml`, Compose et `serving.yaml` s'accordent sur le port.
+- **Phase D — notifications Telegram** (12/11, 30 tests) : second abonne du journal. Les messages sont
+  **construits depuis le journal**, donc les captures Telegram du chapitre 5 se retrouvent ligne par
+  ligne dans le journal remis au jury ; seules des **cles declarees** entrent dans un message ;
+  **au plus un message par minute et par type** (§9), le premier partant immediatement ; aucun
+  `parse_mode` ; un echec d'envoi est compte, jamais leve (D42). Jeton et conversation par
+  l'environnement uniquement, `actif: false` dans le depot, `mdrift notify-test` pour verifier le
+  chemin reel avant une demonstration. Aucun test n'ouvre de connexion : transport injecte, horloge
+  pilotee par le test.
+- **Phase E — documentation** (12/11) : D39 a D42 dans `docs/decisions.md`, cette entree, suppression
+  du fichier de reprise `docs/etat_m5.md` dont le contenu definitif est ici.
+
+### Ce que M5 apporte au memoire
+Les **captures du pipeline MLOps du chapitre 5** et la matiere du 5.1 / 5.2 : l'architecture du
+service de detection, le registre et l'alias `champion`, les metriques exposees, les deux tableaux de
+bord et les notifications. M5 apporte aussi un chiffre que le chapitre 6 ne pouvait pas produire —
+`window_ms_p95`, le temps de traitement d'une **vraie** fenetre, reentrainement exclu — qui est la
+mesure attendue par l'indicateur I7 du 2.7 : traitement < intervalle de collecte.
+
+### Le point le plus consequent du jalon
+La reference du moniteur de derive est **telechargee depuis le registre**, pas recalee sur les
+premieres fenetres du service. Recaler reviendrait a comparer le present a lui-meme : une derive
+survenue pendant un arret du service — mise a jour, redemarrage de la machine, c'est-a-dire
+precisement les moments ou le comportement normal change — serait **definitivement invisible**, sans
+que rien ne le signale. La surveillance tournerait, les panneaux resteraient verts, la strategie
+proposee ne se declencherait jamais, et le chapitre 5 montrerait un pipeline qui ne fait rien tout en
+ayant l'air de fonctionner. Le service **refuse donc de demarrer** sur un champion sans reference.
+Le meme raisonnement vaut pour le contrat de features (D39) : des colonnes qui ont change de sens ne
+font lever aucune erreur a un `IsolationForest`, qui continue a produire des scores, des alertes et
+des captures, tous faux.
+
+### Trois choses que seul Sidy peut faire, et dans cet ordre
+1. `docker compose up -d mlflow` puis `uv run mdrift registry-info` depuis l'hote : c'est le chemin
+   complet (serveur -> client -> telechargement d'artefact) que les tests sqlite ne traversent pas.
+2. `docker compose build detection` puis `docker compose up -d detection`, et verifier la cible
+   `detection` en **UP** dans Prometheus (Status -> Targets). C'est la seule etape qui prouve que
+   l'exporter est joignable depuis le reseau interne.
+3. Creer le bot avec @BotFather, mettre `TELEGRAM_BOT_TOKEN` et `TELEGRAM_CHAT_ID` dans `.env`, passer
+   `telegram.actif` a `true`, puis `uv run mdrift notify-test`. A refaire juste avant la soutenance :
+   un jeton revoque ne se voit qu'a l'envoi.
+
+Etat du code : **441 tests passent** (289 a la fin de M4), `ruff check` et `ruff format --check` sans
+remarque sur 98 fichiers.
+
+## Prochaine etape : M6
+Test final sur infrastructure reelle, a faire avec Sidy sur le serveur : enregistrer des sessions
+portant des **derives reelles** (deploiement d'une nouvelle version d'une appli de test, changement
+des ressources d'un conteneur, montee durable du trafic) et des **anomalies injectees** horodatees,
+puis rejouer B0, B1, P et A1 sur ces sessions avec le harnais de M2 et les parametres **figes** depuis
+M3. Livrable memoire : la validation sur infrastructure reelle du chapitre 6, a comparer aux resultats
+SMD. Rappel du §4.3 : injections uniquement dans les conteneurs dedies et limites, jamais sur une
+application en production, et aucune IP, nom d'hote ou domaine dans les resultats ni les captures.
