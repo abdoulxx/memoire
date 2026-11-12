@@ -317,6 +317,12 @@ services:
       # autre conteneur, qui vient collecter. Rien n'est publie sur l'hote.
       DETECTION_EXPORTER_HOST: 0.0.0.0
       DETECTION_EXPORTER_PORT: "8001"
+      # Notifications : le jeton et la conversation ne passent que par
+      # l'environnement (§4.3). Vides par defaut, et `telegram.actif: false`
+      # dans configs/notify.yaml : la pile demarre sans eux, et le service
+      # affiche « notifications desactivees » au lieu d'echouer.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     volumes:
       - ./configs:/srv/configs:ro
       - detection-data:/srv/results/online

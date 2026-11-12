@@ -64,6 +64,7 @@ from src.config import resolve_path
 from src.features.signature import SignatureFeatures, signature_depuis_config
 from src.features.windowing import make_windows
 from src.models.isolation_forest import IsolationForestDetector, build_detector
+from src.notify.base import Notificateur
 from src.serving.evenements import EVENEMENTS
 from src.serving.exporter import ExporteurDetection
 from src.serving.prometheus import ClientPrometheus, ErreurPrometheus, grille
@@ -262,6 +263,7 @@ class BoucleEnLigne:
         dormir: Callable[[float], None] = time.sleep,
         journal: JournalEvenements | None = None,
         exporteur: ExporteurDetection | None = None,
+        notificateur: Notificateur | None = None,
     ) -> None:
         self.client = client
         self.registre = registre
@@ -284,6 +286,11 @@ class BoucleEnLigne:
         self.exporteur = exporteur
         if exporteur is not None:
             self.journal.abonnes.append(exporteur.observer_evenement)
+        # Second abonne du journal, au meme titre que l'exporter : les
+        # notifications ne disent rien d'autre que ce qui a ete journalise.
+        self.notificateur = notificateur
+        if notificateur is not None:
+            self.journal.abonnes.append(notificateur.observer_evenement)
 
         self.window_size = int(features_config["window_size"])
         self.stride = int(features_config["stride"])
@@ -483,6 +490,13 @@ class BoucleEnLigne:
         """Lit les nouveaux points et traite les fenetres completes qui en decoulent."""
         if self.champion is None:
             raise ErreurBoucle("`demarrer()` doit etre appele avant `tick()`.")
+
+        # Avant toute sortie anticipee du tick : sans ce rincage periodique, le
+        # dernier evenement d'une rafale resterait en attente de regroupement
+        # jusqu'au prochain du meme type, c'est-a-dire peut-etre jusqu'a la fin
+        # du service.
+        if self.notificateur is not None:
+            self.notificateur.rincer()
 
         fin = self.horloge() - self.reglages.retard_s
         attendu = int(self._instants[-1]) + self.pas if len(self._instants) else fin
@@ -743,4 +757,9 @@ class BoucleEnLigne:
             window_ms_mean=round(self.mesures.moyenne, 3),
             window_ms_p95=round(self.mesures.p95, 3),
         )
+        # Force : le resume de session vient d'etre journalise, et il serait en
+        # attente de regroupement alors que plus aucun tick ne suivra. C'est le
+        # message qui clot une demonstration.
+        if self.notificateur is not None:
+            self.notificateur.rincer(forcer=True)
         self.journal.fermer()

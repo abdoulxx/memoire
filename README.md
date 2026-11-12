@@ -40,7 +40,7 @@ uv run mdrift --help
 | `uv run mdrift figures-m3` | Figures de comparaison et tableaux du chapitre 6 | M3 |
 | `uv run mdrift figures` | Figures PNG 300 dpi a partir des traces enregistrees | M0 |
 | `docker compose up -d` | Lance la pile de collecte : appli de test, Prometheus, node_exporter, cAdvisor, Grafana | M4 |
-| `python infra/grafana/build_dashboard.py` | Reengendre le JSON du tableau de bord Grafana (ne pas l'editer a la main) | M4 |
+| `python infra/grafana/build_dashboard.py` | Reengendre les deux tableaux de bord Grafana — infrastructure et pipeline (ne pas les editer a la main) | M4, M5 |
 | `uv run mdrift chaos <type>` | Injecte une anomalie bornee et l'horodate dans `data/labels/` | M4 |
 | `uv run mdrift chaos-list` | Liste les conteneurs d'injection en cours | M4 |
 | `make stop-chaos` | Arret d'urgence : tue toute injection en cours (§4.3) | M4 |
@@ -50,6 +50,8 @@ uv run mdrift --help
 | `uv run mdrift session-info <run_id>` | Decrit la session chargee : duree, fenetres, anomalies, derives, trous combles | M4 |
 | `uv run mdrift registry-init <run_id>` | Entraine le modele initial sur la part calme d'une session et le promeut `champion` | M5 |
 | `uv run mdrift registry-info` | Dit quel modele est en service, avec sa signature de features et l'historique des versions | M5 |
+| `uv run mdrift serve` | Lance le service de detection en ligne : Prometheus -> score -> derive -> reentrainement -> promotion, avec exporter `/metrics` et notifications | M5 |
+| `uv run mdrift notify-test` | Envoie un message de verification sur Telegram et s'arrete (a lancer avant une demonstration) | M5 |
 
 Les commandes de calibrage (`smd-screening`, `calibration`, `calibration-k`, `calibrate-drift`)
 n'ecrivent **jamais** dans `results/summary.csv` : elles ont leur propre fichier. Une campagne de mise

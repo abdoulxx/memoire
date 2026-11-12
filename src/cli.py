@@ -1602,6 +1602,12 @@ def serve(
         "--sans-exporter",
         help="N'ouvre pas le port /metrics : utile quand un autre service l'occupe deja.",
     ),
+    notify: str = typer.Option("notify.yaml", help="Configuration des notifications."),
+    sans_telegram: bool = typer.Option(
+        False,
+        "--sans-telegram",
+        help="N'envoie aucune notification, meme si notify.yaml les active.",
+    ),
 ) -> None:
     """Lance le service de detection en ligne sur la pile de collecte.
 
@@ -1615,6 +1621,9 @@ def serve(
     ces deux commandes disent en une seconde ce que le service mettrait une
     minute a decouvrir.
     """
+    import time
+
+    from src.notify.telegram import ErreurTelegram, construire_notificateur
     from src.serving.exporter import ErreurExporteur, ExporteurDetection, ReglagesExporteur
     from src.serving.loop import BoucleEnLigne, ErreurBoucle, ReglagesBoucle
     from src.serving.prometheus import ClientPrometheus, ErreurPrometheus
@@ -1650,6 +1659,19 @@ def serve(
         strategie=strategy.name, budget_ms=float(reglages.pas_s) * 1000.0
     )
 
+    # Les notifications sont construites ici, donc avant le demarrage : une
+    # configuration fausse ou un jeton absent doit arreter la commande tout de
+    # suite, et non une heure plus tard a la premiere alerte.
+    try:
+        notificateur = (
+            None
+            if sans_telegram
+            else construire_notificateur(load_config(notify), horloge=time.time)
+        )
+    except ErreurTelegram as erreur:
+        typer.echo(f"Notifications : {erreur}", err=True)
+        raise typer.Exit(code=2) from erreur
+
     boucle = BoucleEnLigne(
         client=ClientPrometheus(reglages.url),
         registre=_registre(serving),
@@ -1662,6 +1684,7 @@ def serve(
         run_id=run_id or None,
         promotion=not sans_promotion,
         exporteur=exporteur,
+        notificateur=notificateur,
     )
 
     typer.echo(f"Service {boucle.run_id}, strategie {strategy.name}, pas {reglages.pas_s}s")
@@ -1679,6 +1702,13 @@ def serve(
         )
     else:
         typer.echo("  exporter        desactive")
+    if notificateur is None:
+        typer.echo("  notifications   desactivees")
+    else:
+        typer.echo(
+            f"  notifications   Telegram, {len(notificateur.reglages.evenements)} evenements, "
+            f"regroupement {int(notificateur.reglages.regroupement_s)}s"
+        )
     try:
         boucle.demarrer()
     except (ErreurBoucle, ErreurRegistre, ErreurPrometheus) as erreur:
@@ -1713,6 +1743,59 @@ def serve(
             f"  window_ms       moyenne {boucle.mesures.moyenne:.1f}, "
             f"p95 {boucle.mesures.p95:.1f} (budget : {reglages.pas_s * 1000} ms)"
         )
+    if notificateur is not None:
+        # Les echecs d'envoi sont silencieux pendant le service pour ne pas
+        # interrompre la detection : c'est ici qu'ils se voient. Un silence de
+        # Telegram ne doit pas passer pour « aucun evenement ».
+        typer.echo(
+            f"  notifications   {notificateur.envois} envoyees, {notificateur.echecs} en echec"
+        )
+
+
+@app.command("notify-test")
+def notify_test(
+    notify: str = typer.Option("notify.yaml", help="Configuration des notifications."),
+) -> None:
+    """Envoie un message de verification sur Telegram, puis s'arrete.
+
+    A lancer avant une demonstration, comme `session-check` pour la collecte et
+    `registry-info` pour le registre : si le jeton, l'identifiant de
+    conversation ou le reseau sont en cause, il vaut mieux l'apprendre en une
+    seconde qu'a la premiere alerte. Le message passe par le meme chemin que les
+    notifications du service — meme redaction, meme transport — pour qu'un
+    succes ici signifie vraiment que la demonstration sonnera.
+    """
+    import time
+
+    from src.notify.telegram import ErreurTelegram, construire_notificateur
+
+    try:
+        notificateur = construire_notificateur(load_config(notify), horloge=time.time)
+    except ErreurTelegram as erreur:
+        typer.echo(f"Notifications : {erreur}", err=True)
+        raise typer.Exit(code=2) from erreur
+    if notificateur is None:
+        typer.echo("Notifications desactivees (`telegram.actif: false`) : rien a verifier.")
+        return
+
+    # Un evenement du vocabulaire du §9, et non un texte libre : ce qui est
+    # verifie doit etre le chemin reel, redaction comprise.
+    notificateur.observer_evenement(
+        {
+            "event": "service_start",
+            "strategy": "verification",
+            "details": {"version": 0, "threshold": 0.0},
+        }
+    )
+    notificateur.rincer(forcer=True)
+    if notificateur.echecs:
+        typer.echo(
+            "Echec de l'envoi. Verifier TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID et l'acces "
+            "reseau a l'API Telegram.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    typer.echo(f"Message envoye ({notificateur.envois}). La conversation est joignable.")
 
 
 if __name__ == "__main__":

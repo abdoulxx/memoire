@@ -46,7 +46,7 @@ Le schema du §2 (mode en ligne) est le contrat a realiser :
 | A | Registre de modeles : wrapper MLflow (tracking + registry, alias `champion`), service `mlflow` dans Compose, enregistrement de l'entrainement initial et des promotions | **terminee** (11/11/2026) |
 | B | Boucle en ligne : lecture Prometheus fenetre par fenetre, features, score, seuil, strategie, reentrainement / validation / promotion, journal JSON lignes, mesure `window_ms` | **terminee** (11/11/2026) |
 | C | Exporter Prometheus du service de detection + tableau de bord Grafana du pipeline | **terminee** (12/11/2026) |
-| D | Notifications Telegram : un message par minute et par type, construites depuis le journal d'evenements | a faire |
+| D | Notifications Telegram : un message par minute et par type, construites depuis le journal d'evenements | **terminee** (12/11/2026) |
 | E | Tests, D39+ dans `decisions.md`, entree M5 de `journal.md`, suppression de ce fichier | a faire |
 
 ## Phase A, ce qui est en place
@@ -207,6 +207,73 @@ sqlite ne traversent pas.
 Ce qui reste a verifier sur le serveur, et que seul Sidy peut faire :
 `docker compose build detection` puis `docker compose up -d detection`, et la
 cible `detection` en UP dans Prometheus (Status -> Targets).
+
+## Phase D, ce qui est en place
+
+- `src/notify/telegram.py` : `NotificateurTelegram`, second abonne du journal
+  d'evenements apres l'exporter. Quatre choix portent cette phase :
+  1. **Les messages sont construits depuis le journal, pas a cote.** Il n'y a
+     nulle part dans le code un « message Telegram » : il n'y a que des
+     evenements journalises dont certains sont pousses. Les captures Telegram du
+     chapitre 5 se retrouvent donc ligne par ligne dans le journal remis avec le
+     memoire.
+  2. **Seules des cles autorisees entrent dans un message** (`CLES_PUBLIABLES`,
+     une liste par type d'evenement). Un formateur qui deverserait `details` en
+     entier finirait par pousser un chemin, un nom d'hote ou une URL vers un
+     serveur tiers des que la boucle journaliserait une erreur de collecte. Le
+     §4.3 l'interdit sans condition et une fuite vers l'API Telegram n'est pas
+     rattrapable : c'est le point le plus grave du module, et celui que les
+     tests attaquent le plus directement.
+  3. **Regroupement : au plus un message par minute et par type** (§9). Le
+     premier evenement d'un type part **immediatement** — une alerte retardee
+     d'une minute n'est plus une alerte en temps reel — et les suivants sont
+     agreges (« 39 anomalies en 60 s. Derniere : ... »). Le compte vient avant
+     le detail parce que c'est lui qui decide d'agir. Sans cette regle, une
+     saturation produirait une alerte par fenetre, et l'API Telegram elle-meme
+     limite a une vingtaine de messages par minute et par conversation.
+  4. **Aucun `parse_mode`.** En Markdown ou en HTML, un `_`, un `*` ou un `<`
+     dans un identifiant ou un message d'erreur fait rejeter l'appel avec un
+     400 : la notification serait perdue au moment ou elle importe le plus.
+  L'envoi est un POST JSON par `urllib` de la bibliotheque standard : aucune
+  dependance nouvelle, `python-telegram-bot` n'etant justifie que par les
+  boutons du bonus (§3). Un echec d'envoi est **compte**, jamais leve : une
+  coupure de reseau mobile ne doit pas arreter un service de detection. Le
+  decompte des echecs s'affiche a l'arret, pour qu'un silence de Telegram ne
+  passe pas pour « aucun evenement ».
+- `src/notify/base.py` : le `Protocol` `Notificateur` (`observer_evenement`,
+  `rincer`). La boucle ne connait pas Telegram, et le test de la boucle n'a pas
+  a construire un notificateur reel pour verifier le rincage.
+- `src/serving/loop.py` : la boucle rince les groupes **a chaque tick, avant
+  toute sortie anticipee**, et **force** le rincage a l'arret. Sans le premier,
+  le dernier evenement d'une rafale attendrait le prochain du meme type, donc
+  peut-etre la fin du service ; sans le second, le resume de session — le
+  message qui clot une demonstration — ne partirait jamais.
+- `configs/notify.yaml` : `actif: false` par defaut (un depot clone ne doit pas
+  appeler une API externe au premier `serve`, une CI encore moins), la liste des
+  evenements pousses, `regroupement_s: 60`, la liste `silencieux`
+  (`disable_notification` : consultables dans l'historique de la conversation,
+  ce qui fait de bonnes captures, sans reveiller personne) et `timeout_s: 5`.
+  Trois exclusions sont justifiees dans le fichier : `drift_signal` (present a
+  chaque fenetre pendant des heures sans confirmation), `retrain_start`
+  (toujours suivi d'un `retrain_end` ou d'un rejet quelques secondes plus tard)
+  et `window_skipped` (un scrape rate coute une fenetre et se lit dans Grafana).
+- Jeton et conversation **uniquement** par `TELEGRAM_BOT_TOKEN` et
+  `TELEGRAM_CHAT_ID` (§4.3), passes au conteneur `detection` avec des valeurs
+  vides par defaut : la pile demarre sans Telegram. `ReglagesTelegram` masque le
+  jeton dans son `repr` pour qu'une trace de pile ne le recopie pas.
+- `mdrift notify-test` : envoie un evenement de verification et s'arrete. A
+  lancer avant une demonstration, comme `session-check` pour la collecte et
+  `registry-info` pour le registre. Il passe par le chemin reel — meme
+  redaction, meme transport — pour qu'un succes signifie vraiment que la
+  demonstration sonnera.
+- 30 tests nouveaux (`tests/test_telegram.py`, 1 dans `tests/test_loop.py`,
+  2 dans `tests/test_infra_stack.py`). Aucun n'ouvre de connexion : le transport
+  est injecte et l'horloge est pilotee par le test — un test qui attendrait
+  reellement soixante secondes ne serait jamais lance. Total 441.
+
+Ce qui reste a verifier sur le serveur, et que seul Sidy peut faire : creer le
+bot avec @BotFather, mettre `TELEGRAM_BOT_TOKEN` et `TELEGRAM_CHAT_ID` dans
+`.env`, passer `telegram.actif` a `true`, puis `uv run mdrift notify-test`.
 
 ## Commandes de reprise
 

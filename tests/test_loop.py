@@ -859,3 +859,72 @@ def test_executer_rend_la_main_et_journalise_les_compteurs(service: Service) -> 
     assert derniere["details"]["n_windows"] == boucle.n_fenetres_vues
     assert derniere["details"]["window_ms_mean"] > 0
     assert derniere["details"]["n_alerts"] == boucle.n_alertes
+
+
+# -------------------------------------------------------------- notifications
+
+
+class FauxNotificateur:
+    """Enregistre ce que la boucle lui demande, sans rien envoyer."""
+
+    def __init__(self) -> None:
+        self.entrees: list[dict[str, Any]] = []
+        self.rincages = 0
+        self.forces = 0
+
+    def observer_evenement(self, entree: dict[str, Any]) -> None:
+        self.entrees.append(entree)
+
+    def rincer(self, *, forcer: bool = False) -> int:
+        self.rincages += 1
+        if forcer:
+            self.forces += 1
+        return 0
+
+
+def test_la_boucle_abonne_le_notificateur_au_journal_et_rince_ses_groupes(
+    registre: RegistreModeles,
+    reglages_serveur: ReglagesServeur,
+    reglages_boucle: ReglagesBoucle,
+    features_config: dict[str, Any],
+    model_config: dict[str, Any],
+) -> None:
+    """Le rincage periodique n'est pas un detail d'implementation.
+
+    La regle du §9 (au plus un message par minute et par type) met des
+    evenements en attente. Sans rincage a chaque tick, le dernier evenement
+    d'une rafale resterait en attente jusqu'au prochain du meme type — donc
+    peut-etre jusqu'a la fin du service — et l'arret sans rincage force
+    perdrait le resume de session, qui est le message qui clot une
+    demonstration.
+    """
+    client = PrometheusSynthetique()
+    _champion(
+        registre, reglages_serveur, features_config, model_config, client, fin_ts=1_700_000_000
+    )
+    horloge = Horloge(t=1_700_040_000 + reglages_boucle.retard_s)
+    faux = FauxNotificateur()
+    boucle = _service(
+        registre,
+        reglages_serveur,
+        reglages_boucle,
+        features_config,
+        model_config,
+        client,
+        horloge,
+        StrategieEspionne(),
+        notificateur=faux,
+    )
+
+    boucle.demarrer()
+    assert [entree["event"] for entree in faux.entrees] == ["service_start"]
+    assert faux.rincages == 0  # aucun tick encore
+
+    horloge.avancer(2 * PAS)
+    boucle.executer(max_ticks=1)
+
+    assert faux.rincages >= 1
+    assert faux.forces == 1
+    assert faux.entrees[-1]["event"] == "service_stop"
+    # Le notificateur ne voit que des lignes de journal, jamais autre chose.
+    assert all(entree["event"] in EVENEMENTS for entree in faux.entrees)

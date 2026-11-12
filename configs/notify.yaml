@@ -1,0 +1,63 @@
+# Notifications Telegram du service de detection (jalon M5, phase D).
+#
+# Les messages sont construits depuis le journal d'evenements du §9 : le
+# notificateur s'abonne a l'ecriture du journal, exactement comme l'exporter
+# Prometheus. Il n'y a donc pas de « message Telegram » quelque part dans le
+# code — il n'y a que des evenements journalises dont certains sont pousses.
+#
+# Aucun secret ici (§4.3). Le jeton du bot et l'identifiant de conversation
+# viennent de l'environnement : TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID.
+
+telegram:
+  # false par defaut : un depot clone ne doit pas tenter d'appeler une API
+  # externe au premier `mdrift serve`. Passe a true sur le serveur, via .env,
+  # pour la demonstration et pour les captures du chapitre 5.
+  actif: false
+
+  # Les evenements pousses sur le telephone. Le vocabulaire complet est celui du
+  # §9 (voir src/serving/evenements.py) ; tout n'a pas sa place dans une
+  # notification :
+  #   - `drift_signal` est exclu : il peut etre present a chaque fenetre pendant
+  #     des heures sans qu'aucune derive ne soit confirmee. C'est l'etape de
+  #     confirmation qui est informative, et elle a son propre evenement.
+  #   - `retrain_start` est exclu : il est toujours suivi de `retrain_end` ou
+  #     d'un rejet quelques secondes plus tard. Deux messages pour un fait.
+  #   - `window_skipped` est exclu : un scrape rate coute une fenetre et se lit
+  #     dans Grafana. Le notifier rendrait le telephone inutilisable un jour de
+  #     reseau instable.
+  # `collect_gap` est garde parce qu'il signale que la detection a decroche de
+  # la collecte : c'est le seul evenement qui invalide une session de mesure.
+  evenements:
+    - alert
+    - drift_confirmed
+    - retrain_end
+    - promoted
+    - rejected
+    - service_start
+    - service_stop
+    - collect_gap
+    - registry_error
+
+  # Au plus un message par type et par fenetre de regroupement (§9). Le premier
+  # evenement d'un type part immediatement ; les suivants sont agreges en un
+  # message de synthese (« 42 anomalies en 60 s »). 60 s = le pas de collecte :
+  # une anomalie par fenetre au maximum arrive donc en message individuel, et
+  # une saturation ne produit qu'un message par minute.
+  regroupement_s: 60
+
+  # Pousses sans notification sonore (`disable_notification`). Ces evenements
+  # doivent rester consultables dans l'historique de la conversation — c'est
+  # d'ailleurs ce qui fait de bonnes captures — sans reveiller personne.
+  silencieux:
+    - service_start
+    - service_stop
+    - retrain_end
+
+  # Un appel qui traine ne doit pas retarder la fenetre suivante : le budget du
+  # temps reel (I7 / T1) est le pas de collecte, soit 60 s, et le notificateur
+  # s'execute dans le thread de la boucle.
+  timeout_s: 5
+
+  # Base de l'API. Surchargeable par TELEGRAM_API_BASE, ce qui permet de viser
+  # un serveur de test local sans toucher a un fichier suivi par git.
+  api: https://api.telegram.org

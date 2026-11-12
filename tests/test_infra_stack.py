@@ -26,6 +26,7 @@ DATASOURCE = RACINE / "infra/grafana/provisioning/datasources/prometheus.yml"
 PROVIDER = RACINE / "infra/grafana/provisioning/dashboards/dashboards.yml"
 PROMETHEUS = RACINE / "infra/prometheus/prometheus.yml"
 COMPOSE = RACINE / "docker-compose.yml"
+NOTIFY = RACINE / "configs/notify.yaml"
 
 # Ce que PromQL apporte lui-meme : fonctions, agregateurs, mots-cles,
 # etiquettes et intervalles. Tout identifiant restant dans une expression est un
@@ -349,7 +350,7 @@ def test_aucun_secret_ni_nom_d_hote_dans_la_pile() -> None:
     # de serveur.
     adresse = re.compile(r"\b(?!127\.0\.0\.1|0\.0\.0\.0)\d{1,3}(\.\d{1,3}){3}\b")
     sensible = re.compile(r"PASSWORD|TOKEN|SECRET|API_KEY", re.IGNORECASE)
-    for chemin in (COMPOSE, PROMETHEUS, DATASOURCE, PROVIDER, TABLEAU, PIPELINE):
+    for chemin in (COMPOSE, PROMETHEUS, DATASOURCE, PROVIDER, TABLEAU, PIPELINE, NOTIFY):
         texte = chemin.read_text(encoding="utf-8")
         assert not adresse.search(texte), chemin.name
         # Toute valeur sensible vient de l'environnement, jamais du fichier :
@@ -359,6 +360,28 @@ def test_aucun_secret_ni_nom_d_hote_dans_la_pile() -> None:
             if nue.startswith("#") or not sensible.search(nue):
                 continue
             assert "${" in nue, f"{chemin.name}:{numero} : {nue}"
+
+
+def test_le_service_de_detection_recoit_les_secrets_telegram_par_l_environnement() -> None:
+    # §4.3 : le jeton et la conversation ne sont ni dans l'image, ni dans un
+    # fichier suivi. Les valeurs par defaut sont vides (`:-`) et non
+    # obligatoires (`:?`) : la pile doit demarrer sans Telegram, parce que la
+    # detection et les resultats du chapitre 6 n'en dependent pas.
+    env = _lire(COMPOSE)["services"]["detection"]["environment"]
+    assert env["TELEGRAM_BOT_TOKEN"] == "${TELEGRAM_BOT_TOKEN:-}"
+    assert env["TELEGRAM_CHAT_ID"] == "${TELEGRAM_CHAT_ID:-}"
+    exemple = (RACINE / ".env.example").read_text(encoding="utf-8")
+    assert "TELEGRAM_BOT_TOKEN=" in exemple
+    assert "TELEGRAM_CHAT_ID=" in exemple
+
+
+def test_les_notifications_sont_inactives_dans_le_depot() -> None:
+    # Un depot clone ne doit pas tenter d'appeler une API externe au premier
+    # `mdrift serve`, et une CI encore moins.
+    import yaml
+
+    bloc = yaml.safe_load(NOTIFY.read_text(encoding="utf-8"))["telegram"]
+    assert bloc["actif"] is False
 
 
 def test_le_registre_sert_les_artefacts_par_http() -> None:
