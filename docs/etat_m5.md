@@ -45,7 +45,7 @@ Le schema du §2 (mode en ligne) est le contrat a realiser :
 |---|---|---|
 | A | Registre de modeles : wrapper MLflow (tracking + registry, alias `champion`), service `mlflow` dans Compose, enregistrement de l'entrainement initial et des promotions | **terminee** (11/11/2026) |
 | B | Boucle en ligne : lecture Prometheus fenetre par fenetre, features, score, seuil, strategie, reentrainement / validation / promotion, journal JSON lignes, mesure `window_ms` | **terminee** (11/11/2026) |
-| C | Exporter Prometheus du service de detection + tableau de bord Grafana du pipeline | a faire |
+| C | Exporter Prometheus du service de detection + tableau de bord Grafana du pipeline | **terminee** (12/11/2026) |
 | D | Notifications Telegram : un message par minute et par type, construites depuis le journal d'evenements | a faire |
 | E | Tests, D39+ dans `decisions.md`, entree M5 de `journal.md`, suppression de ce fichier | a faire |
 
@@ -137,6 +137,76 @@ sqlite ne traversent pas.
   dont celui qui compare les features de la boucle a celles que `make_windows`
   produit sur les memes points bruts : c'est le seul endroit ou une divergence
   entre le mode en ligne et le rejeu se verrait. Total 364.
+
+## Phase C, ce qui est en place
+
+- `src/serving/exporter.py` : `ExporteurDetection`, les series que Prometheus
+  lit sur `/metrics`. Trois choix structurent ce module, et aucun n'est
+  rattrapable apres les captures du chapitre 5 :
+  1. **L'exporter s'abonne au journal, il ne compte pas en parallele.**
+     `mdrift_events_total{event=...}` est incremente depuis
+     `JournalEvenements.ecrire` via une liste d'abonnes. Deux comptages
+     independants finissent toujours par diverger, et une capture Grafana qui
+     contredirait le journal remis au jury ne serait defendable ni dans un sens
+     ni dans l'autre. Consequence voulue : le vocabulaire du §9 **est** l'ensemble
+     des valeurs de l'etiquette `event`, et un evenement refuse par le journal ne
+     peut laisser aucune trace dans les metriques.
+  2. **Toutes les series valent zero des la construction.** Dans Grafana, une
+     serie absente et une serie a zero se dessinent pareil : un panneau
+     « derives confirmees » vide signifierait indifferemment « aucune derive » ou
+     « service tombe ». Meme raison que les jauges d'injection de l'appli de test
+     a M4.
+  3. **`mdrift_last_window_timestamp_seconds` porte l'instant de la fenetre, pas
+     celui du scrape.** Le tableau de bord en fait `time() - jauge`, qui est le
+     retard reel de la detection. `up == 1` ne dit rien de l'avancement de la
+     boucle : un service vivant mais bloque sur un trou de collecte resterait
+     vert.
+  Les etiquettes sont bornees a `event`, `strategy` et `version` — jamais une
+  etiquette par fenetre ou par feature : l'explosion de cardinalite est la
+  premiere cause de saturation du disque de Prometheus (§4.3), et `/metrics`
+  n'expose aucune valeur de feature ni aucun nom de metrique du serveur.
+- `src/serving/evenements.py` : le vocabulaire d'evenements extrait dans son
+  propre module. C'est un **contrat** entre le journal, l'exporter, Telegram et
+  Grafana ; le laisser dans `loop.py` imposait un import en anneau
+  (`loop` -> `exporter` -> `loop`). La boucle en reste un producteur, pas le
+  proprietaire.
+- `infra/grafana/dashboards/pipeline.json` (genere par
+  `infra/grafana/build_dashboard.py`, 15 panneaux) : etat du service, detection
+  (score et seuil, alertes/h), surveillance de derive (part de features, suite
+  consecutive, signaux contre confirmations), reentrainement / validation / mise
+  en service, temps reel et sante de la boucle (I7 / T1). Deux fichiers et non un
+  seul : `infrastructure.json` montre la **cause** (ce que fait le serveur),
+  `pipeline.json` l'**effet** (ce que le detecteur en conclut) ; meme source et
+  meme fenetre de temps, mais une capture de 25 panneaux est illisible en
+  impression et les deux publics ne sont pas les memes.
+- `infra/detection/Dockerfile` + service `detection` dans `docker-compose.yml` :
+  aucun port publie (Prometheus joint la cible par le reseau interne), journal
+  sur un **volume nomme** et non un montage hote — un montage est cree avec la
+  propriete de l'hote alors que le conteneur tourne en uid 10003, et la premiere
+  ligne de journal echouerait en « permission denied ». Recuperation des traces :
+  `docker compose cp detection:/srv/results/online ./results/`. L'image installe
+  `mlflow-skinny==2.22.4`, **la meme version** que le serveur du service
+  `mlflow` : client et serveur partagent le schema de la base.
+- `configs/serving.yaml` : section `exporter:` (`actif`, `hote`, `port`), avec
+  priorite a `DETECTION_EXPORTER_HOST` / `DETECTION_EXPORTER_PORT`. Dans un
+  conteneur il faut ecouter sur `0.0.0.0` pour que Prometheus atteigne la cible,
+  sur un poste `127.0.0.1` pour ne rien exposer : aucune des deux valeurs n'a sa
+  place en dur dans un fichier suivi.
+- `mdrift serve` ouvre `/metrics` **avant** le premier tick et sort en code 2 si
+  le port est pris : un service qui detecte sans etre observable ne produit
+  aucune capture, et l'echec doit etre immediat. `--sans-exporter` pour un essai
+  local.
+- 47 tests nouveaux (`tests/test_exporter.py`, 12 dans
+  `tests/test_infra_stack.py`). Les plus utiles verifient ce qu'aucune relecture
+  ne verrait : que chaque serie `mdrift_*` citee dans une expression PromQL du
+  tableau de bord existe bien dans le rendu de l'exporter, que chaque valeur
+  d'etiquette `event` appartient au vocabulaire du journal, et que
+  `prometheus.yml`, Compose et `serving.yaml` s'accordent sur le port 8001.
+  Total 411.
+
+Ce qui reste a verifier sur le serveur, et que seul Sidy peut faire :
+`docker compose build detection` puis `docker compose up -d detection`, et la
+cible `detection` en UP dans Prometheus (Status -> Targets).
 
 ## Commandes de reprise
 

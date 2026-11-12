@@ -1,7 +1,7 @@
 {
   "uid": "memoire-infra",
   "title": "Memoire — infrastructure et appli de test",
-  "description": "Tableau de bord M4 : ce que l'infrastructure et l'appli de test produisent, et les fenetres d'injection qui permettent de les lire. Le score d'anomalie, les alertes, les derives confirmees et la version du modele en service arrivent avec le service de detection (M5), sur un second tableau de bord. Fichier provisionne depuis le depot : toute modification se fait dans infra/grafana/dashboards/, pas dans l'interface.",
+  "description": "Tableau de bord M4 : ce que l'infrastructure et l'appli de test produisent, et les fenetres d'injection qui permettent de les lire. Le score d'anomalie, les alertes, les derives confirmees et la version du modele en service sont sur le tableau de bord « pipeline de detection » (uid memoire-pipeline), qui couvre le meme intervalle de temps. Fichier provisionne depuis le depot : toute modification se fait dans infra/grafana/dashboards/, pas dans l'interface.",
   "tags": [
     "memoire",
     "m4"
@@ -88,7 +88,7 @@
     {
       "type": "stat",
       "title": "Latence de base declaree",
-      "description": "Valeur annoncee par le deploiement courant, a comparer au p50 observe.",
+      "description": "Valeur annoncee par le deploiement courant, a comparer au p50 observe. L'ecart entre les deux est ce que l'injection de latence ajoute ; si elle s'en ecarte sans injection, c'est l'appli de test qui ne tient pas sa promesse et la session n'est pas exploitable.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -441,7 +441,7 @@
     {
       "type": "timeseries",
       "title": "CPU hote utilise",
-      "description": "",
+      "description": "Le CPU de l'hote entier, toutes charges confondues. A lire avec le panneau « CPU par conteneur » : une injection doit se voir ici sans que la part des autres conteneurs bouge, sinon le confinement du §4.3 n'a pas tenu.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -495,7 +495,7 @@
     {
       "type": "timeseries",
       "title": "Memoire hote utilisee",
-      "description": "",
+      "description": "Calcule sur `MemAvailable` et non sur `MemFree` : le cache de pages est reclamable, et le compter comme occupe ferait apparaitre un serveur sain a 95 % de memoire utilisee en permanence. Une fuite injectee doit plafonner a la limite --memory de son conteneur.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -742,7 +742,7 @@
     {
       "type": "timeseries",
       "title": "Cibles de collecte joignables",
-      "description": "Si la collecte decroche pendant une injection, la session est inexploitable : le trou ne se distingue pas d'une absence d'anomalie. A verifier avant de retenir une session. La cible `detection` reste a 0 jusqu'a M5, c'est normal.",
+      "description": "Si la collecte decroche pendant une injection, la session est inexploitable : le trou ne se distingue pas d'une absence d'anomalie. A verifier avant de retenir une session. La cible `detection` est le service de detection : elle vaut 0 quand il n'est pas lance, ce qui n'empeche pas d'enregistrer une session.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

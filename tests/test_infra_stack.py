@@ -15,26 +15,89 @@ from pathlib import Path
 
 import yaml
 
-from infra.grafana.build_dashboard import construire
+from infra.grafana.build_dashboard import TABLEAUX, construire
+from src.serving.evenements import EVENEMENTS
 
 RACINE = Path(__file__).resolve().parents[1]
 TABLEAU = RACINE / "infra/grafana/dashboards/infrastructure.json"
+PIPELINE = RACINE / "infra/grafana/dashboards/pipeline.json"
+DOSSIER_TABLEAUX = RACINE / "infra/grafana/dashboards"
 DATASOURCE = RACINE / "infra/grafana/provisioning/datasources/prometheus.yml"
 PROVIDER = RACINE / "infra/grafana/provisioning/dashboards/dashboards.yml"
 PROMETHEUS = RACINE / "infra/prometheus/prometheus.yml"
 COMPOSE = RACINE / "docker-compose.yml"
+
+# Ce que PromQL apporte lui-meme : fonctions, agregateurs, mots-cles,
+# etiquettes et intervalles. Tout identifiant restant dans une expression est un
+# nom de metrique, et doit donc exister dans l'exporter.
+PROMQL_RESERVE = {
+    "rate",
+    "irate",
+    "increase",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "count",
+    "by",
+    "without",
+    "clamp_min",
+    "clamp_max",
+    "vector",
+    "time",
+    "histogram_quantile",
+    "or",
+    "and",
+    "unless",
+    "le",
+    "job",
+    "name",
+    "status",
+    "event",
+    "strategy",
+    "version",
+    "alert",
+    "__rate_interval",
+    "h",
+    "m",
+    "s",
+}
 
 
 def _lire(chemin: Path) -> dict:
     return yaml.safe_load(chemin.read_text(encoding="utf-8"))
 
 
-def _tableau() -> dict:
-    return json.loads(TABLEAU.read_text(encoding="utf-8"))
+def _tableau(chemin: Path = TABLEAU) -> dict:
+    return json.loads(chemin.read_text(encoding="utf-8"))
+
+
+def _tous_les_tableaux() -> list[tuple[str, dict]]:
+    """Les deux tableaux de bord suivis. Les tests generiques valent pour les deux."""
+    return [(nom, _tableau(DOSSIER_TABLEAUX / f"{nom}.json")) for nom in TABLEAUX]
 
 
 def _panneaux(tableau: dict) -> list[dict]:
     return [p for p in tableau["panels"] if p["type"] != "row"]
+
+
+def _expressions(tableau: dict) -> list[tuple[str, str]]:
+    return [
+        (panneau["title"], cible["expr"])
+        for panneau in _panneaux(tableau)
+        for cible in panneau["targets"]
+    ]
+
+
+def _identifiants(expr: str) -> set[str]:
+    """Les identifiants d'une expression PromQL, valeurs d'etiquettes exclues.
+
+    Sans retirer les chaines entre guillemets, `event="drift_signal"` ferait
+    passer `drift_signal` pour un nom de metrique : le test se plaindrait d'une
+    serie absente qui n'en est pas une.
+    """
+    sans_valeurs = re.sub(r'"[^"]*"', "", expr)
+    return set(re.findall(r"\b[a-z_][a-z0-9_]*\b", sans_valeurs)) - PROMQL_RESERVE
 
 
 def test_le_json_suivi_est_celui_du_generateur() -> None:
@@ -43,20 +106,49 @@ def test_le_json_suivi_est_celui_du_generateur() -> None:
     assert _tableau() == construire()
 
 
+def test_les_deux_tableaux_de_bord_sont_ceux_du_generateur() -> None:
+    # `allowUiUpdates: false` : un panneau ajoute dans l'interface serait perdu
+    # au prochain provisionnement, et une capture du memoire qui ne se reproduit
+    # pas est une capture indefendable.
+    for nom, constructeur in TABLEAUX.items():
+        assert _tableau(DOSSIER_TABLEAUX / f"{nom}.json") == constructeur(), nom
+
+
+def test_les_tableaux_de_bord_ont_des_uid_et_des_titres_distincts() -> None:
+    # Deux tableaux de bord provisionnes avec le meme uid : Grafana n'en garde
+    # qu'un, silencieusement, et c'est l'autre qu'on cherchera pendant la
+    # soutenance.
+    uids = [tableau["uid"] for _, tableau in _tous_les_tableaux()]
+    titres = [tableau["title"] for _, tableau in _tous_les_tableaux()]
+    assert len(set(uids)) == len(uids), uids
+    assert len(set(titres)) == len(titres), titres
+
+
 def test_tous_les_panneaux_pointent_vers_la_source_provisionnee() -> None:
     uid = _lire(DATASOURCE)["datasources"][0]["uid"]
-    for panneau in _panneaux(_tableau()):
-        assert panneau["datasource"]["uid"] == uid, panneau["title"]
-        for cible in panneau["targets"]:
-            assert cible["datasource"]["uid"] == uid, panneau["title"]
+    for nom, tableau in _tous_les_tableaux():
+        for panneau in _panneaux(tableau):
+            assert panneau["datasource"]["uid"] == uid, (nom, panneau["title"])
+            for cible in panneau["targets"]:
+                assert cible["datasource"]["uid"] == uid, (nom, panneau["title"])
 
 
 def test_chaque_panneau_porte_un_titre_et_au_moins_une_requete() -> None:
-    for panneau in _panneaux(_tableau()):
-        assert panneau["title"].strip()
-        assert panneau["targets"]
-        for cible in panneau["targets"]:
-            assert cible["expr"].strip()
+    for nom, tableau in _tous_les_tableaux():
+        for panneau in _panneaux(tableau):
+            assert panneau["title"].strip(), nom
+            assert panneau["targets"], (nom, panneau["title"])
+            for cible in panneau["targets"]:
+                assert cible["expr"].strip(), (nom, panneau["title"])
+
+
+def test_chaque_panneau_porte_sa_justification() -> None:
+    # Le JSON n'accepte pas de commentaires : la `description` est le seul
+    # endroit ou la raison d'un panneau puisse vivre, et Grafana l'affiche au
+    # survol, donc elle est lisible sur une capture.
+    for nom, tableau in _tous_les_tableaux():
+        for panneau in _panneaux(tableau):
+            assert len(panneau["description"].strip()) > 40, (nom, panneau["title"])
 
 
 def test_le_plan_de_controle_est_exclu_des_metriques_applicatives() -> None:
@@ -67,6 +159,56 @@ def test_le_plan_de_controle_est_exclu_des_metriques_applicatives() -> None:
             expr = cible["expr"]
             if "app_requests_total" in expr or "app_request_duration" in expr:
                 assert "/health" in expr and "/chaos" in expr, panneau["title"]
+
+
+def test_le_tableau_de_bord_du_pipeline_n_interroge_que_l_exporter() -> None:
+    # La separation des deux tableaux de bord n'a de sens que si elle tient :
+    # une metrique d'infrastructure glissee ici brouillerait la lecture
+    # « cause / effet » qui justifie les deux fichiers.
+    for titre, expr in _expressions(_tableau(PIPELINE)):
+        noms = _identifiants(expr)
+        assert noms, (titre, expr)
+        assert all(nom.startswith("mdrift_") for nom in noms), (titre, sorted(noms))
+
+
+def test_les_series_du_tableau_de_bord_du_pipeline_existent_dans_l_exporter() -> None:
+    """C'est le test qui attrape la faute la plus silencieuse de cette phase.
+
+    Une metrique mal orthographiee dans une expression PromQL ne produit ni
+    erreur ni avertissement : le panneau s'affiche, vide, et un panneau vide ne
+    se distingue pas d'une absence d'evenement. On ne s'en apercevrait qu'en
+    regardant une capture du chapitre 5, trop tard.
+    """
+    from src.serving.exporter import ExporteurDetection
+
+    exporteur = ExporteurDetection(strategie="proposed", budget_ms=60_000.0)
+    # `mdrift_build_info` porte des etiquettes : la serie n'existe qu'une fois
+    # le service demarre, donc on simule la ligne de journal qui la cree.
+    exporteur.observer_evenement(
+        {
+            "event": "service_start",
+            "run_id": "test",
+            "strategy": "proposed",
+            "details": {"version": 1, "threshold": 0.5, "features_empreinte": "abc"},
+        }
+    )
+    exposees = {
+        ligne.split("{")[0].split(" ")[0]
+        for ligne in exporteur.rendre().decode("utf-8").splitlines()
+        if ligne and not ligne.startswith("#")
+    }
+    for titre, expr in _expressions(_tableau(PIPELINE)):
+        for nom in re.findall(r"\bmdrift_[a-z0-9_]*\b", expr):
+            assert nom in exposees, (titre, nom, sorted(exposees))
+
+
+def test_les_etiquettes_event_du_tableau_de_bord_sont_du_vocabulaire_du_journal() -> None:
+    # L'etiquette `event` prend ses valeurs dans le vocabulaire du §9, que le
+    # journal refuse de depasser. Une valeur inventee dans une requete donnerait
+    # un panneau vide, sans rien signaler.
+    for titre, expr in _expressions(_tableau(PIPELINE)):
+        for valeur in re.findall(r'event="([^"]+)"', expr):
+            assert valeur in EVENEMENTS, (titre, valeur)
 
 
 def test_grafana_ouvre_le_tableau_de_bord_du_depot() -> None:
@@ -80,9 +222,87 @@ def test_grafana_ouvre_le_tableau_de_bord_du_depot() -> None:
 
 def test_les_cibles_de_collecte_couvrent_les_services_de_la_pile() -> None:
     jobs = {bloc["job_name"] for bloc in _lire(PROMETHEUS)["scrape_configs"]}
-    # `detection` est declaree des M4 pour que la configuration ne change pas a
-    # M5 ; elle reste `down` jusque-la, ce qui est visible et sans effet.
+    # `detection` a ete declaree des M4 pour que la configuration de collecte
+    # n'ait pas a changer a M5 ; le service qui la tient existe depuis.
     assert {"prometheus", "app", "node", "cadvisor", "detection"} <= jobs
+
+
+def test_la_cible_de_detection_est_le_service_de_detection_au_bon_port() -> None:
+    """Trois fichiers doivent s'accorder sur un seul port, sinon la cible est `down`.
+
+    La collecte nomme `detection:8001`, le service Compose doit donc s'appeler
+    `detection` et exposer 8001, et la section `exporter:` de serving.yaml doit
+    ecouter sur ce port. Changer l'un des trois sans les autres ne casse rien de
+    visible : la cible passe simplement `down`, et le tableau de bord du
+    pipeline reste vide.
+    """
+    jobs = {bloc["job_name"]: bloc for bloc in _lire(PROMETHEUS)["scrape_configs"]}
+    cibles = jobs["detection"]["static_configs"][0]["targets"]
+    assert cibles == ["detection:8001"]
+    service, port = cibles[0].split(":")
+
+    compose = _lire(COMPOSE)["services"]
+    assert service in compose, service
+    assert port in [str(expose) for expose in compose[service]["expose"]]
+    assert _lire(RACINE / "configs/serving.yaml")["exporter"]["port"] == int(port)
+
+
+def test_l_exporter_du_service_ecoute_sur_toutes_les_interfaces_du_conteneur() -> None:
+    # Dans le conteneur, c'est Prometheus — depuis un autre conteneur — qui vient
+    # collecter : 127.0.0.1 rendrait la cible injoignable. Le defaut de
+    # configs/serving.yaml reste 127.0.0.1, pour qu'un `mdrift serve` lance a la
+    # main sur un poste n'expose rien.
+    service = _lire(COMPOSE)["services"]["detection"]
+    assert service["environment"]["DETECTION_EXPORTER_HOST"] == "0.0.0.0"
+    assert _lire(RACINE / "configs/serving.yaml")["exporter"]["hote"] == "127.0.0.1"
+    # Et rien n'est publie sur l'hote : /metrics decrit l'etat de la detection,
+    # ce n'est pas une interface.
+    assert "ports" not in service
+
+
+def test_le_service_de_detection_joint_ses_voisins_par_leur_nom_de_service() -> None:
+    # §4.3 : aucun nom d'hote ni IP. Et ces deux variables ont la priorite sur
+    # les YAML de configs/, qui sont ecrits pour un poste de developpement.
+    env = _lire(COMPOSE)["services"]["detection"]["environment"]
+    assert env["PROMETHEUS_URL"] == "http://prometheus:9090"
+    assert env["MLFLOW_TRACKING_URI"] == "http://mlflow:5000"
+
+
+def test_le_journal_d_evenements_survit_au_conteneur() -> None:
+    """Le journal est la source unique du §9 : il ne peut pas vivre dans la couche
+    jetable du conteneur.
+
+    Volume nomme et non monture depuis l'hote : Docker creerait la monture avec
+    l'appartenance de l'hote alors que le conteneur tourne en uid 10003, et la
+    premiere ligne de journal echouerait en « permission denied » — au demarrage
+    d'une session de demonstration.
+    """
+    service = _lire(COMPOSE)["services"]["detection"]
+    dossier = _lire(RACINE / "configs/serving.yaml")["journal"]["dossier"]
+    montures = {m.split(":")[1]: m.split(":")[0] for m in service["volumes"]}
+    assert f"/srv/{dossier}" in montures, service["volumes"]
+    volume = montures[f"/srv/{dossier}"]
+    assert not volume.startswith("."), volume
+    assert volume in _lire(COMPOSE)["volumes"], volume
+
+
+def test_le_conteneur_de_detection_est_borne() -> None:
+    # §4.3 : tout conteneur de la pile est borne. Celui-ci plus large que l'appli
+    # de test, parce qu'un reentrainement tue en plein milieu ne produirait ni
+    # promotion, ni rejet, ni `retrain_end`.
+    service = _lire(COMPOSE)["services"]["detection"]
+    assert service["cpus"].startswith("${DETECTION_CPUS")
+    assert service["mem_limit"].startswith("${DETECTION_MEMORY")
+
+
+def test_l_image_du_service_installe_le_meme_client_mlflow_que_le_serveur() -> None:
+    # Client et serveur partagent le schema de la base. L'image du service
+    # installe `mlflow-skinny` — il est client, il n'heberge rien — mais la
+    # version doit rester celle de l'image du registre et de pyproject.toml.
+    image = _lire(COMPOSE)["services"]["mlflow"]["image"]
+    epinglee = image.rsplit(":v", 1)[1]
+    dockerfile = (RACINE / "infra/detection/Dockerfile").read_text(encoding="utf-8")
+    assert f'"mlflow-skinny=={epinglee}"' in dockerfile, image
 
 
 def test_la_source_de_donnees_suit_le_pas_de_collecte() -> None:
@@ -129,7 +349,7 @@ def test_aucun_secret_ni_nom_d_hote_dans_la_pile() -> None:
     # de serveur.
     adresse = re.compile(r"\b(?!127\.0\.0\.1|0\.0\.0\.0)\d{1,3}(\.\d{1,3}){3}\b")
     sensible = re.compile(r"PASSWORD|TOKEN|SECRET|API_KEY", re.IGNORECASE)
-    for chemin in (COMPOSE, PROMETHEUS, DATASOURCE, PROVIDER, TABLEAU):
+    for chemin in (COMPOSE, PROMETHEUS, DATASOURCE, PROVIDER, TABLEAU, PIPELINE):
         texte = chemin.read_text(encoding="utf-8")
         assert not adresse.search(texte), chemin.name
         # Toute valeur sensible vient de l'environnement, jamais du fichier :

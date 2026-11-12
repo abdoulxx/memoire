@@ -1,6 +1,20 @@
-"""Engendre `infra/grafana/dashboards/infrastructure.json` (livrable M4, phase B).
+"""Engendre les tableaux de bord Grafana suivis par git (M4 phase B, M5 phase C).
 
     python infra/grafana/build_dashboard.py
+
+Deux fichiers, deux lectures :
+
+- `infrastructure.json` : ce que l'infrastructure et l'appli de test produisent,
+  avec les fenetres d'injection qui permettent de les lire. C'est la **cause**.
+- `pipeline.json` : ce que le service de detection en fait — score, alertes,
+  derive confirmee, reentrainements, modele en service, temps de traitement.
+  C'est l'**effet**, et ce sont les captures du chapitre 5.
+
+Les deux partagent la meme source de donnees et la meme fenetre de temps, donc
+passer de l'un a l'autre compare bien le meme intervalle. Les separer plutot que
+tout empiler sur une page : une capture de 25 panneaux est illisible dans un
+memoire imprime, et les deux publics ne sont pas les memes — l'un sert a valider
+une session, l'autre a montrer le pipeline MLOps.
 
 Pourquoi un generateur et non un JSON ecrit a la main : un tableau de bord
 Grafana ne tolere pas une virgule de trop, les requetes PromQL s'y repetent d'un
@@ -156,7 +170,12 @@ def construire() -> dict:
             4,
             [cible("app_base_latency_ms", "ms", instant=True)],
             unite="ms",
-            description="Valeur annoncee par le deploiement courant, a comparer au p50 observe.",
+            description=(
+                "Valeur annoncee par le deploiement courant, a comparer au p50 "
+                "observe. L'ecart entre les deux est ce que l'injection de latence "
+                "ajoute ; si elle s'en ecarte sans injection, c'est l'appli de test "
+                "qui ne tient pas sa promesse et la session n'est pas exploitable."
+            ),
         )
     )
     panneaux.append(
@@ -302,6 +321,12 @@ def construire() -> dict:
             unite="percent",
             mini=0,
             maxi=100,
+            description=(
+                "Le CPU de l'hote entier, toutes charges confondues. A lire avec le "
+                "panneau « CPU par conteneur » : une injection doit se voir ici sans "
+                "que la part des autres conteneurs bouge, sinon le confinement du "
+                "§4.3 n'a pas tenu."
+            ),
         )
     )
     panneaux.append(
@@ -320,6 +345,12 @@ def construire() -> dict:
             unite="percent",
             mini=0,
             maxi=100,
+            description=(
+                "Calcule sur `MemAvailable` et non sur `MemFree` : le cache de pages "
+                "est reclamable, et le compter comme occupe ferait apparaitre un "
+                "serveur sain a 95 % de memoire utilisee en permanence. Une fuite "
+                "injectee doit plafonner a la limite --memory de son conteneur."
+            ),
         )
     )
     panneaux.append(
@@ -411,7 +442,8 @@ def construire() -> dict:
                 "Si la collecte decroche pendant une injection, la session est "
                 "inexploitable : le trou ne se distingue pas d'une absence "
                 "d'anomalie. A verifier avant de retenir une session. La cible "
-                "`detection` reste a 0 jusqu'a M5, c'est normal."
+                "`detection` est le service de detection : elle vaut 0 quand il "
+                "n'est pas lance, ce qui n'empeche pas d'enregistrer une session."
             ),
         )
     )
@@ -463,8 +495,9 @@ def construire() -> dict:
             "Tableau de bord M4 : ce que l'infrastructure et l'appli de test "
             "produisent, et les fenetres d'injection qui permettent de les lire. "
             "Le score d'anomalie, les alertes, les derives confirmees et la version "
-            "du modele en service arrivent avec le service de detection (M5), sur un "
-            "second tableau de bord. Fichier provisionne depuis le depot : toute "
+            "du modele en service sont sur le tableau de bord « pipeline de "
+            "detection » (uid memoire-pipeline), qui couvre le meme intervalle de "
+            "temps. Fichier provisionne depuis le depot : toute "
             "modification se fait dans infra/grafana/dashboards/, pas dans "
             "l'interface."
         ),
@@ -482,20 +515,403 @@ def construire() -> dict:
     }
 
 
+# Fraicheur de la detection : la seule mesure qui distingue un service qui
+# *repond* d'un service qui *avance*. Le filtre `> 0` est necessaire : avant la
+# premiere fenetre la jauge vaut 0, et `time() - 0` afficherait l'age de l'epoque
+# Unix, soit cinquante ans de retard. Avec le filtre, la serie est simplement
+# absente jusqu'a la premiere fenetre, ce qui est la verite.
+FRAICHEUR = "time() - (mdrift_last_window_timestamp_seconds > 0)"
+
+
+def construire_pipeline() -> dict:
+    """Tableau de bord du service de detection (M5) : les captures du chapitre 5."""
+    panneaux: list[dict] = []
+    y = 0
+
+    panneaux.append(rangee("Etat du service", y))
+    y += 1
+    panneaux.append(
+        stat(
+            "Service de detection",
+            0,
+            y,
+            4,
+            4,
+            [cible("mdrift_service_up", "actif", instant=True)],
+            description=(
+                "1 quand le service traite des fenetres, 0 apres un arret propre, "
+                "absent quand le processus ne tourne pas. Les trois cas se "
+                "distinguent, ce qui n'aurait pas ete le cas avec une serie creee "
+                "au premier evenement."
+            ),
+        )
+    )
+    panneaux.append(
+        stat(
+            "Modele en service",
+            4,
+            y,
+            4,
+            4,
+            [cible("mdrift_model_version", "version", instant=True)],
+            description=(
+                "Version portant l'alias `champion` dans le registre MLflow. "
+                "Deplacer cet alias **est** la mise en service (§6, point 5) : "
+                "ce nombre est donc la seule reponse vraie a « quel modele tourne ». "
+                "0 signifie qu'aucun champion n'est charge."
+            ),
+        )
+    )
+    panneaux.append(
+        stat(
+            "Fraicheur de la detection",
+            8,
+            y,
+            4,
+            4,
+            [cible(FRAICHEUR, "age", instant=True)],
+            unite="s",
+            description=(
+                "Age de la derniere fenetre traitee. C'est le panneau a regarder "
+                "d'abord : un service peut repondre a Prometheus tout en n'avancant "
+                "plus, parce que la collecte a un trou ou que le registre ne repond "
+                "pas. Au-dela de deux fois l'intervalle de collecte, quelque chose "
+                "ne va pas."
+            ),
+        )
+    )
+    panneaux.append(
+        stat(
+            "Seuil d'alerte courant",
+            12,
+            y,
+            4,
+            4,
+            [cible("mdrift_window_threshold", "seuil", instant=True)],
+            description=(
+                "Percentile eleve des scores d'entrainement du modele en service, "
+                "recalcule a chaque reentrainement (§6). Il saute a chaque "
+                "promotion : c'est normal, et c'est ce que montre le panneau des "
+                "scores juste en dessous."
+            ),
+        )
+    )
+    panneaux.append(
+        stat(
+            "Fenetres traitees",
+            16,
+            y,
+            4,
+            4,
+            [cible("mdrift_windows_total", "fenetres", instant=True)],
+            description=(
+                "Depuis le demarrage du service. Les fenetres du prechargement n'y "
+                "sont pas : elles remplissent l'historique de reentrainement mais ne "
+                "sont ni scorees ni alertees (§2), et les compter ici ferait croire "
+                "a des centaines de detections instantanees au demarrage."
+            ),
+        )
+    )
+    panneaux.append(
+        stat(
+            "Derive : part des features",
+            20,
+            y,
+            4,
+            4,
+            [cible("mdrift_drift_share", "part", instant=True)],
+            unite="percentunit",
+            description=(
+                "Part des 152 features dont la statistique de KS depasse le seuil, "
+                "sur la derniere fenetre. C'est la regle d'agregation du §6, point 1 : "
+                "une part, pas un test corrige, parce qu'a 20 000 points les "
+                "p-valeurs n'ont aucune specificite (D18)."
+            ),
+        )
+    )
+    y += 4
+
+    panneaux.append(rangee("Detection", y))
+    y += 1
+    panneaux.append(
+        serie(
+            "Score d'anomalie et seuil",
+            0,
+            y,
+            16,
+            8,
+            [
+                cible("mdrift_window_score", "score", "A"),
+                cible("mdrift_window_threshold", "seuil", "B"),
+            ],
+            mini=0,
+            description=(
+                "Le panneau central de la demonstration : une alerte est exactement "
+                "le moment ou la premiere courbe passe au-dessus de la seconde. Le "
+                "seuil est une marche et non une droite, parce qu'un reentrainement "
+                "promu le recalcule."
+            ),
+        )
+    )
+    panneaux.append(
+        serie(
+            "Alertes par heure",
+            16,
+            y,
+            8,
+            8,
+            [
+                cible(
+                    '3600 * rate(mdrift_events_total{event="alert"}[$__rate_interval])',
+                    "alertes/h",
+                )
+            ],
+            mini=0,
+            description=(
+                "Le taux d'alertes du §7, exprime a l'heure comme les fausses "
+                "alertes par heure. Hors periode d'anomalie injectee, ce taux "
+                "**est** le taux de fausses alertes : c'est la lecture directe du "
+                "cout d'un detecteur en exploitation."
+            ),
+        )
+    )
+    y += 8
+
+    panneaux.append(rangee("Surveillance de derive", y))
+    y += 1
+    panneaux.append(
+        serie(
+            "Part des features en derive et persistance",
+            0,
+            y,
+            12,
+            7,
+            [
+                cible("mdrift_drift_share", "part des features", "A"),
+                cible("mdrift_drift_streak", "fenetres consecutives", "B"),
+            ],
+            mini=0,
+            description=(
+                "Les deux signaux de la strategie P. La part dit qu'il se passe "
+                "quelque chose maintenant ; la persistance dit depuis combien de "
+                "fenetres, et c'est elle qui distingue une derive durable d'une "
+                "anomalie passagere (§6, point 2). Une confirmation arrive quand la "
+                "seconde courbe atteint K."
+            ),
+        )
+    )
+    panneaux.append(
+        serie(
+            "Signaux et confirmations de derive",
+            12,
+            y,
+            12,
+            7,
+            [
+                cible(
+                    'increase(mdrift_events_total{event="drift_signal"}[$__rate_interval])',
+                    "signaux",
+                    "A",
+                ),
+                cible(
+                    'increase(mdrift_events_total{event="drift_confirmed"}[$__rate_interval])',
+                    "confirmations",
+                    "B",
+                ),
+            ],
+            mini=0,
+            description=(
+                "Un signal est une fenetre suspecte, une confirmation est une "
+                "decision. L'ecart entre les deux courbes est ce que l'etape de "
+                "confirmation filtre : sans elle, chaque pic du panneau de gauche "
+                "declencherait un reentrainement. Le §7 compte les confirmations "
+                "sur machines stables comme des fausses confirmations."
+            ),
+        )
+    )
+    y += 7
+
+    panneaux.append(rangee("Reentrainement, validation, mise en service", y))
+    y += 1
+    panneaux.append(
+        serie(
+            "Reentrainements, promotions, rejets",
+            0,
+            y,
+            12,
+            7,
+            [
+                cible('mdrift_events_total{event="retrain_start"}', "reentrainements", "A"),
+                cible('mdrift_events_total{event="promoted"}', "promus", "B"),
+                cible('mdrift_events_total{event="rejected"}', "rejetes", "C"),
+            ],
+            mini=0,
+            description=(
+                "Cumuls, pas des taux : ce sont les trois nombres de la famille "
+                "« cout » du §7, et le rapport promus / rejetes est ce que le "
+                "garde-fou de validation produit. Un rejet n'est pas un echec : "
+                "c'est un modele qui n'est pas entre en service, et le champion a "
+                "tenu."
+            ),
+        )
+    )
+    panneaux.append(
+        serie(
+            "Temps de calcul passe a reentrainer",
+            12,
+            y,
+            6,
+            7,
+            [cible("mdrift_retrain_seconds_total", "cumul", "A")],
+            unite="s",
+            mini=0,
+            description=(
+                "L'autre metrique de cout du §7, celle qui permet de comparer la "
+                "strategie proposee au reentrainement periodique : ce que la "
+                "periodicite depense sans derive, la strategie P ne le depense pas."
+            ),
+        )
+    )
+    panneaux.append(
+        serie(
+            "Version du modele en service",
+            18,
+            y,
+            6,
+            7,
+            [cible("mdrift_model_version", "version", "A")],
+            mini=0,
+            description=(
+                "Chaque marche est une promotion effective dans le registre. Si "
+                "cette courbe ne bouge pas alors que des promotions sont comptees a "
+                "gauche, c'est que le registre a refuse : le champion reste en "
+                "service, et l'evenement `registry_error` le dit."
+            ),
+        )
+    )
+    y += 7
+
+    panneaux.append(rangee("Temps reel et sante de la boucle (I7 / T1)", y))
+    y += 1
+    panneaux.append(
+        serie(
+            "Temps de traitement d'une fenetre",
+            0,
+            y,
+            12,
+            7,
+            [
+                cible("mdrift_window_duration_ms_mean", "moyenne", "A"),
+                cible("mdrift_window_duration_ms_p95", "p95", "B"),
+                cible("mdrift_window_budget_ms", "budget (intervalle de collecte)", "C"),
+            ],
+            unite="ms",
+            mini=0,
+            description=(
+                "Les indicateurs I7 / T1 du chapitre 2 : le traitement d'une fenetre "
+                "doit tenir sous l'intervalle de collecte, sinon le service prend du "
+                "retard sans jamais le rattraper. C'est **la** mesure que le rejeu ne "
+                "peut pas donner : il score par blocs et ne produit qu'un temps "
+                "amorti (§9). Le reentrainement en est exclu, il est compte a part."
+            ),
+        )
+    )
+    panneaux.append(
+        serie(
+            "Fenetres sautees, trous de collecte, erreurs de registre",
+            12,
+            y,
+            12,
+            7,
+            [
+                cible(
+                    'increase(mdrift_events_total{event="window_skipped"}[$__rate_interval])',
+                    "fenetres sautees",
+                    "A",
+                ),
+                cible(
+                    'increase(mdrift_events_total{event="collect_gap"}[$__rate_interval])',
+                    "trous de collecte",
+                    "B",
+                ),
+                cible(
+                    'increase(mdrift_events_total{event="registry_error"}[$__rate_interval])',
+                    "erreurs de registre",
+                    "C",
+                ),
+            ],
+            mini=0,
+            description=(
+                "Les trois facons dont la boucle rate quelque chose sans mentir : une "
+                "fenetre dont un point manque au bord est sautee plutot que scoree "
+                "sur une valeur inventee ; un retard trop grand n'est pas rattrape "
+                "fenetre par fenetre, sous peine d'alerter sur des evenements "
+                "passes ; une erreur de registre laisse le champion en service. Ce "
+                "panneau rend ces renoncements visibles — une session ou ils "
+                "s'accumulent n'est pas exploitable."
+            ),
+        )
+    )
+    y += 7
+
+    return {
+        "uid": "memoire-pipeline",
+        "title": "Memoire — pipeline de detection",
+        "description": (
+            "Tableau de bord M5 : ce que le service de detection fait des metriques "
+            "collectees — score, alertes, surveillance de derive, reentrainements, "
+            "modele en service, temps de traitement. Toutes les series viennent de "
+            "l'exporter du service, qui s'abonne au journal d'evenements du §9 : "
+            "aucun compteur ici ne peut exister sans la ligne de journal "
+            "correspondante. Les metriques brutes de l'infrastructure sont sur le "
+            "tableau de bord « infrastructure et appli de test » (uid memoire-infra), "
+            "sur le meme intervalle de temps. Fichier provisionne depuis le depot : "
+            "toute modification se fait dans infra/grafana/dashboards/, pas dans "
+            "l'interface."
+        ),
+        "tags": ["memoire", "m5"],
+        "timezone": "browser",
+        "editable": False,
+        "schemaVersion": 39,
+        "version": 1,
+        "refresh": "30s",
+        "time": {"from": "now-1h", "to": "now"},
+        "timepicker": {},
+        "templating": {"list": []},
+        "annotations": {"list": []},
+        "panels": panneaux,
+    }
+
+
+# Les deux tableaux de bord suivis, par nom de fichier. Les tests comparent le
+# JSON commite a ce que ces fonctions produisent : un panneau modifie dans
+# l'interface Grafana serait perdu au prochain provisionnement, et le test est la
+# pour que personne ne l'apprenne par une capture ratee.
+TABLEAUX = {
+    "infrastructure": construire,
+    "pipeline": construire_pipeline,
+}
+
+
 def main() -> None:
     # Chemin deduit de l'emplacement du fichier : la commande doit marcher
     # depuis n'importe quel repertoire courant.
     depot = Path(__file__).resolve().parent / "dashboards"
     depot.mkdir(parents=True, exist_ok=True)
-    chemin = depot / "infrastructure.json"
-    tableau = construire()
-    chemin.write_text(json.dumps(tableau, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    panneaux = [p for p in tableau["panels"] if p["type"] != "row"]
-    print(f"ecrit {chemin} : {len(panneaux)} panneaux, {len(tableau['panels'])} entrees")
-    for p in tableau["panels"]:
-        if p["type"] != "row":
-            for c in p["targets"]:
-                assert c["expr"].count("{") == c["expr"].count("}"), p["title"]
+    for nom, tableau in TABLEAUX.items():
+        chemin = depot / f"{nom}.json"
+        donnees = tableau()
+        chemin.write_text(
+            json.dumps(donnees, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        panneaux = [p for p in donnees["panels"] if p["type"] != "row"]
+        print(f"ecrit {chemin} : {len(panneaux)} panneaux, {len(donnees['panels'])} entrees")
+        for p in donnees["panels"]:
+            if p["type"] != "row":
+                for c in p["targets"]:
+                    # Une accolade orpheline dans une expression PromQL passe la
+                    # relecture et casse le panneau a l'affichage.
+                    assert c["expr"].count("{") == c["expr"].count("}"), p["title"]
     print("accolades equilibrees dans toutes les expressions")
 
 

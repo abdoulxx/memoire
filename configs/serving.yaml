@@ -70,3 +70,22 @@ journal:
   # que lisent l'exporter Prometheus (phase C) et les notifications Telegram
   # (phase D) : `<dossier>/<run_id>/events.jsonl`.
   dossier: results/online
+
+exporter:
+  # Exporter Prometheus du service de detection. C'est lui qui fait apparaitre la
+  # detection dans Grafana a cote des metriques du serveur : cause et effet sur
+  # le meme axe de temps, ce qui est le livrable du chapitre 5.
+  actif: true
+
+  # Adresse d'ecoute. Comme MLFLOW_TRACKING_URI, elle depend du deploiement :
+  # DETECTION_EXPORTER_HOST et DETECTION_EXPORTER_PORT ont la priorite sur ces
+  # valeurs. Dans le conteneur `detection` du docker-compose, l'hote vaut
+  # 0.0.0.0 — sans quoi Prometheus, qui est dans un autre conteneur, ne
+  # joindrait pas la cible. Par defaut ici 127.0.0.1 : lance a la main sur un
+  # poste, le service n'expose rien sur le reseau.
+  hote: 127.0.0.1
+
+  # Port de la cible `detection` deja declaree dans infra/prometheus/prometheus.yml
+  # (job `detection`, cible `detection:8001`). Le changer ici sans le changer
+  # la-bas rendrait la cible `down`.
+  port: 8001

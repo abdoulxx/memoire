@@ -270,6 +270,75 @@ services:
     networks:
       - memoire
 
+  # Service de detection en ligne (jalon M5, phase C). C'est lui qui tient la
+  # cible Prometheus `detection:8001`, declaree des M4 : la configuration de
+  # collecte n'a pas eu a changer entre les deux jalons.
+  #
+  # Quatre points qui ne vont pas de soi :
+  #
+  #  1. Aucun port publie sur l'hote. Prometheus atteint l'exporter par le
+  #     reseau Compose, et /metrics n'a aucune raison d'etre joignable
+  #     autrement : il decrit l'etat de la detection, pas une interface.
+  #     L'inspecter a la main se fait par `docker compose exec`.
+  #  2. Le journal va dans un volume nomme, pas dans une monture de `results/`.
+  #     Il doit survivre au conteneur — c'est lui qu'on relit apres une session
+  #     pour expliquer ce qui s'est passe, et la source unique du §9 — mais une
+  #     monture depuis l'hote serait creee par Docker avec l'appartenance de
+  #     l'hote, alors que le conteneur tourne en utilisateur non privilegie
+  #     (uid 10003) : la premiere ligne de journal echouerait en « permission
+  #     denied », au demarrage d'une session de demonstration. Un volume nomme
+  #     herite de l'appartenance du dossier de l'image, donc du bon utilisateur.
+  #     Pour recuperer le journal sur l'hote :
+  #         docker compose cp detection:/srv/results/online ./results/
+  #  3. `configs/` est monte en lecture seule par-dessus celui de l'image. Un
+  #     reglage change sur le serveur prend effet au redemarrage du conteneur,
+  #     sans reconstruire l'image ; et la monture en lecture seule garantit que
+  #     le service ne peut pas reecrire une configuration suivie par git.
+  #  4. `restart: unless-stopped`, comme le reste de la pile, et c'est possible
+  #     precisement parce que le prechargement du §2 existe : apres un
+  #     redemarrage, la boucle rattrape son historique et le garde-fou
+  #     « historique < 300 fenetres » ne bloque pas les reentrainements pendant
+  #     des heures. Sans ce prechargement, un redemarrage automatique aurait
+  #     rendu le service inerte au moment ou il sert.
+  detection:
+    build:
+      context: .
+      dockerfile: infra/detection/Dockerfile
+    image: memoire-detection:${DETECTION_VERSION:-0.1.0}
+    container_name: memoire-detection
+    restart: unless-stopped
+    environment:
+      # Dans le conteneur, les deux services voisins se joignent par leur nom.
+      # Ces valeurs ont la priorite sur configs/ (datasets/serveur.yaml et
+      # configs/serving.yaml), qui sont ecrites pour un poste de developpement.
+      PROMETHEUS_URL: http://prometheus:9090
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      # Toutes les interfaces **du conteneur** : c'est Prometheus, depuis un
+      # autre conteneur, qui vient collecter. Rien n'est publie sur l'hote.
+      DETECTION_EXPORTER_HOST: 0.0.0.0
+      DETECTION_EXPORTER_PORT: "8001"
+    volumes:
+      - ./configs:/srv/configs:ro
+      - detection-data:/srv/results/online
+    expose:
+      - "8001"
+    # Borne plus large que l'appli de test : un reentrainement d'Isolation Forest
+    # est le seul moment ou ce service consomme vraiment, et il ne doit pas etre
+    # tue en plein milieu — un challenger a moitie entraine ne serait ni promu ni
+    # rejete, et le journal n'aurait pas de `retrain_end`.
+    cpus: ${DETECTION_CPUS:-1.5}
+    mem_limit: ${DETECTION_MEMORY:-1g}
+    labels:
+      memoire.role: service_detection
+    depends_on:
+      prometheus:
+        condition: service_started
+      mlflow:
+        condition: service_healthy
+    networks:
+      - memoire
+
+
 networks:
   memoire:
     name: memoire
@@ -282,3 +351,5 @@ volumes:
     name: memoire-grafana-data
   mlflow-data:
     name: memoire-mlflow-data
+  detection-data:
+    name: memoire-detection-data

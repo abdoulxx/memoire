@@ -1,0 +1,958 @@
+{
+  "uid": "memoire-pipeline",
+  "title": "Memoire — pipeline de detection",
+  "description": "Tableau de bord M5 : ce que le service de detection fait des metriques collectees — score, alertes, surveillance de derive, reentrainements, modele en service, temps de traitement. Toutes les series viennent de l'exporter du service, qui s'abonne au journal d'evenements du §9 : aucun compteur ici ne peut exister sans la ligne de journal correspondante. Les metriques brutes de l'infrastructure sont sur le tableau de bord « infrastructure et appli de test » (uid memoire-infra), sur le meme intervalle de temps. Fichier provisionne depuis le depot : toute modification se fait dans infra/grafana/dashboards/, pas dans l'interface.",
+  "tags": [
+    "memoire",
+    "m5"
+  ],
+  "timezone": "browser",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Etat du service",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Service de detection",
+      "description": "1 quand le service traite des fenetres, 0 apres un arret propre, absent quand le processus ne tourne pas. Les trois cas se distinguent, ce qui n'aurait pas ete le cas avec une serie creee au premier evenement.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_service_up",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "legendFormat": "actif"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Modele en service",
+      "description": "Version portant l'alias `champion` dans le registre MLflow. Deplacer cet alias **est** la mise en service (§6, point 5) : ce nombre est donc la seule reponse vraie a « quel modele tourne ». 0 signifie qu'aucun champion n'est charge.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_model_version",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "legendFormat": "version"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Fraicheur de la detection",
+      "description": "Age de la derniere fenetre traitee. C'est le panneau a regarder d'abord : un service peut repondre a Prometheus tout en n'avancant plus, parce que la collecte a un trou ou que le registre ne repond pas. Au-dela de deux fois l'intervalle de collecte, quelque chose ne va pas.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "time() - (mdrift_last_window_timestamp_seconds > 0)",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "legendFormat": "age"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Seuil d'alerte courant",
+      "description": "Percentile eleve des scores d'entrainement du modele en service, recalcule a chaque reentrainement (§6). Il saute a chaque promotion : c'est normal, et c'est ce que montre le panneau des scores juste en dessous.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_window_threshold",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "legendFormat": "seuil"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Fenetres traitees",
+      "description": "Depuis le demarrage du service. Les fenetres du prechargement n'y sont pas : elles remplissent l'historique de reentrainement mais ne sont ni scorees ni alertees (§2), et les compter ici ferait croire a des centaines de detections instantanees au demarrage.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_windows_total",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "legendFormat": "fenetres"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Derive : part des features",
+      "description": "Part des 152 features dont la statistique de KS depasse le seuil, sur la derniere fenetre. C'est la regle d'agregation du §6, point 1 : une part, pas un test corrige, parce qu'a 20 000 points les p-valeurs n'ont aucune specificite (D18).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_drift_share",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "legendFormat": "part"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Detection",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Score d'anomalie et seuil",
+      "description": "Le panneau central de la demonstration : une alerte est exactement le moment ou la premiere courbe passe au-dessus de la seconde. Le seuil est une marche et non une droite, parce qu'un reentrainement promu le recalcule.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 16,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_window_score",
+          "refId": "A",
+          "range": true,
+          "legendFormat": "score"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_window_threshold",
+          "refId": "B",
+          "range": true,
+          "legendFormat": "seuil"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Alertes par heure",
+      "description": "Le taux d'alertes du §7, exprime a l'heure comme les fausses alertes par heure. Hors periode d'anomalie injectee, ce taux **est** le taux de fausses alertes : c'est la lecture directe du cout d'un detecteur en exploitation.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 6,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "3600 * rate(mdrift_events_total{event=\"alert\"}[$__rate_interval])",
+          "refId": "A",
+          "range": true,
+          "legendFormat": "alertes/h"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Surveillance de derive",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Part des features en derive et persistance",
+      "description": "Les deux signaux de la strategie P. La part dit qu'il se passe quelque chose maintenant ; la persistance dit depuis combien de fenetres, et c'est elle qui distingue une derive durable d'une anomalie passagere (§6, point 2). Une confirmation arrive quand la seconde courbe atteint K.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 12,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_drift_share",
+          "refId": "A",
+          "range": true,
+          "legendFormat": "part des features"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_drift_streak",
+          "refId": "B",
+          "range": true,
+          "legendFormat": "fenetres consecutives"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Signaux et confirmations de derive",
+      "description": "Un signal est une fenetre suspecte, une confirmation est une decision. L'ecart entre les deux courbes est ce que l'etape de confirmation filtre : sans elle, chaque pic du panneau de gauche declencherait un reentrainement. Le §7 compte les confirmations sur machines stables comme des fausses confirmations.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 15,
+        "w": 12,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "increase(mdrift_events_total{event=\"drift_signal\"}[$__rate_interval])",
+          "refId": "A",
+          "range": true,
+          "legendFormat": "signaux"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "increase(mdrift_events_total{event=\"drift_confirmed\"}[$__rate_interval])",
+          "refId": "B",
+          "range": true,
+          "legendFormat": "confirmations"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Reentrainement, validation, mise en service",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Reentrainements, promotions, rejets",
+      "description": "Cumuls, pas des taux : ce sont les trois nombres de la famille « cout » du §7, et le rapport promus / rejetes est ce que le garde-fou de validation produit. Un rejet n'est pas un echec : c'est un modele qui n'est pas entre en service, et le champion a tenu.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 23,
+        "w": 12,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_events_total{event=\"retrain_start\"}",
+          "refId": "A",
+          "range": true,
+          "legendFormat": "reentrainements"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_events_total{event=\"promoted\"}",
+          "refId": "B",
+          "range": true,
+          "legendFormat": "promus"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_events_total{event=\"rejected\"}",
+          "refId": "C",
+          "range": true,
+          "legendFormat": "rejetes"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Temps de calcul passe a reentrainer",
+      "description": "L'autre metrique de cout du §7, celle qui permet de comparer la strategie proposee au reentrainement periodique : ce que la periodicite depense sans derive, la strategie P ne le depense pas.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 23,
+        "w": 6,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_retrain_seconds_total",
+          "refId": "A",
+          "range": true,
+          "legendFormat": "cumul"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Version du modele en service",
+      "description": "Chaque marche est une promotion effective dans le registre. Si cette courbe ne bouge pas alors que des promotions sont comptees a gauche, c'est que le registre a refuse : le champion reste en service, et l'evenement `registry_error` le dit.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 23,
+        "w": 6,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_model_version",
+          "refId": "A",
+          "range": true,
+          "legendFormat": "version"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Temps reel et sante de la boucle (I7 / T1)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Temps de traitement d'une fenetre",
+      "description": "Les indicateurs I7 / T1 du chapitre 2 : le traitement d'une fenetre doit tenir sous l'intervalle de collecte, sinon le service prend du retard sans jamais le rattraper. C'est **la** mesure que le rejeu ne peut pas donner : il score par blocs et ne produit qu'un temps amorti (§9). Le reentrainement en est exclu, il est compte a part.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 12,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "ms",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_window_duration_ms_mean",
+          "refId": "A",
+          "range": true,
+          "legendFormat": "moyenne"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_window_duration_ms_p95",
+          "refId": "B",
+          "range": true,
+          "legendFormat": "p95"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "mdrift_window_budget_ms",
+          "refId": "C",
+          "range": true,
+          "legendFormat": "budget (intervalle de collecte)"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Fenetres sautees, trous de collecte, erreurs de registre",
+      "description": "Les trois facons dont la boucle rate quelque chose sans mentir : une fenetre dont un point manque au bord est sautee plutot que scoree sur une valeur inventee ; un retard trop grand n'est pas rattrape fenetre par fenetre, sous peine d'alerter sur des evenements passes ; une erreur de registre laisse le champion en service. Ce panneau rend ces renoncements visibles — une session ou ils s'accumulent n'est pas exploitable.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 31,
+        "w": 12,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "increase(mdrift_events_total{event=\"window_skipped\"}[$__rate_interval])",
+          "refId": "A",
+          "range": true,
+          "legendFormat": "fenetres sautees"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "increase(mdrift_events_total{event=\"collect_gap\"}[$__rate_interval])",
+          "refId": "B",
+          "range": true,
+          "legendFormat": "trous de collecte"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "increase(mdrift_events_total{event=\"registry_error\"}[$__rate_interval])",
+          "refId": "C",
+          "range": true,
+          "legendFormat": "erreurs de registre"
+        }
+      ]
+    }
+  ]
+}

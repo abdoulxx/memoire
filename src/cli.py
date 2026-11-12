@@ -1597,6 +1597,11 @@ def serve(
         help="Reentraine et valide, mais ne met rien en service : repetition avant demonstration.",
     ),
     run_id: str = typer.Option("", help="Identifiant du run (defaut : horodate)."),
+    sans_exporter: bool = typer.Option(
+        False,
+        "--sans-exporter",
+        help="N'ouvre pas le port /metrics : utile quand un autre service l'occupe deja.",
+    ),
 ) -> None:
     """Lance le service de detection en ligne sur la pile de collecte.
 
@@ -1610,6 +1615,7 @@ def serve(
     ces deux commandes disent en une seconde ce que le service mettrait une
     minute a decouvrir.
     """
+    from src.serving.exporter import ErreurExporteur, ExporteurDetection, ReglagesExporteur
     from src.serving.loop import BoucleEnLigne, ErreurBoucle, ReglagesBoucle
     from src.serving.prometheus import ClientPrometheus, ErreurPrometheus
     from src.strategies.factory import build_strategy
@@ -1634,6 +1640,16 @@ def serve(
         reglages.pas_s,
     )
 
+    try:
+        reglages_exporteur = ReglagesExporteur.depuis_config(serving_config)
+    except ErreurExporteur as erreur:
+        typer.echo(f"Configuration : {erreur}", err=True)
+        raise typer.Exit(code=2) from erreur
+
+    exporteur = ExporteurDetection(
+        strategie=strategy.name, budget_ms=float(reglages.pas_s) * 1000.0
+    )
+
     boucle = BoucleEnLigne(
         client=ClientPrometheus(reglages.url),
         registre=_registre(serving),
@@ -1645,9 +1661,24 @@ def serve(
         seed=seed,
         run_id=run_id or None,
         promotion=not sans_promotion,
+        exporteur=exporteur,
     )
 
     typer.echo(f"Service {boucle.run_id}, strategie {strategy.name}, pas {reglages.pas_s}s")
+    # L'exporter est ouvert **avant** le demarrage : si le champion manque, la
+    # cible Prometheus repond quand meme, avec `mdrift_service_up` a 0, et le
+    # tableau de bord montre un service qui n'a pas demarre au lieu d'un trou.
+    if reglages_exporteur.actif and not sans_exporter:
+        try:
+            exporteur.servir(reglages_exporteur)
+        except OSError as erreur:
+            typer.echo(f"Exporter : port indisponible ({erreur}).", err=True)
+            raise typer.Exit(code=2) from erreur
+        typer.echo(
+            f"  exporter        http://{reglages_exporteur.hote}:{reglages_exporteur.port}/metrics"
+        )
+    else:
+        typer.echo("  exporter        desactive")
     try:
         boucle.demarrer()
     except (ErreurBoucle, ErreurRegistre, ErreurPrometheus) as erreur:

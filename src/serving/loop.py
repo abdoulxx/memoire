@@ -15,9 +15,10 @@ Ce que ce module **ne** fait pas, et c'est voulu :
   signale ;
 - il ne decide rien lui-meme. Le seuil vient du modele, le declenchement de la
   strategie, la mise en service du registre ;
-- il n'envoie aucune notification et n'expose aucune metrique. Il **ecrit le
-  journal d'evenements** (§9), et c'est ce journal que l'exporter (phase C) et
-  Telegram (phase D) consomment. Une source unique, pas des messages ad hoc.
+- il n'envoie aucune notification et ne construit aucune metrique. Il **ecrit
+  le journal d'evenements** (§9), et c'est ce journal que l'exporter (phase C)
+  et Telegram (phase D) consomment, en s'y **abonnant** : une source unique, pas
+  des messages ad hoc ni des compteurs tenus en double.
 
 Quatre decisions de ce module demandent une justification, parce qu'elles ne
 sont pas evidentes et qu'aucune n'est rattrapable apres coup :
@@ -63,30 +64,12 @@ from src.config import resolve_path
 from src.features.signature import SignatureFeatures, signature_depuis_config
 from src.features.windowing import make_windows
 from src.models.isolation_forest import IsolationForestDetector, build_detector
+from src.serving.evenements import EVENEMENTS
+from src.serving.exporter import ExporteurDetection
 from src.serving.prometheus import ClientPrometheus, ErreurPrometheus, grille
 from src.strategies.base import Strategy, WindowContext
 from src.strategies.retraining import run_retrain_cycle
 from src.tracking.registry import ErreurRegistre, RegistreModeles
-
-# Vocabulaire du §9, complete par les evenements propres au service. Les sept
-# premiers sont ceux que le harnais de rejeu ecrit deja : Telegram et Grafana
-# lisent le meme vocabulaire dans les deux modes.
-EVENEMENTS = (
-    "alert",
-    "drift_signal",
-    "drift_confirmed",
-    "retrain_start",
-    "retrain_end",
-    "promoted",
-    "rejected",
-    # Propres au mode en ligne : ce qui n'existe pas en rejeu, ou le flux est
-    # complet et le modele toujours disponible.
-    "service_start",
-    "service_stop",
-    "window_skipped",
-    "collect_gap",
-    "registry_error",
-)
 
 
 class ErreurBoucle(RuntimeError):
@@ -157,6 +140,11 @@ class JournalEvenements:
     _fichier: Any = field(default=None, repr=False)
     entrees: list[dict[str, Any]] = field(default_factory=list, repr=False)
     garder_en_memoire: bool = False
+    # Observateurs de la ligne ecrite : l'exporter Prometheus, puis Telegram.
+    # Ils lisent ce qui a ete journalise, et rien d'autre : une metrique ou une
+    # notification sans ligne de journal correspondante serait indefendable
+    # devant un jury, et l'inverse aussi.
+    abonnes: list[Callable[[dict[str, Any]], None]] = field(default_factory=list, repr=False)
 
     def ouvrir(self) -> JournalEvenements:
         self.chemin.parent.mkdir(parents=True, exist_ok=True)
@@ -182,6 +170,13 @@ class JournalEvenements:
             self._fichier.flush()
         if self.garder_en_memoire:
             self.entrees.append(entree)
+        for abonne in self.abonnes:
+            # L'observation ne casse pas le service : une erreur d'exporter ou
+            # de notification ne doit pas interrompre une detection en cours.
+            try:
+                abonne(entree)
+            except Exception:  # noqa: BLE001
+                continue
         return entree
 
     def fermer(self) -> None:
@@ -266,6 +261,7 @@ class BoucleEnLigne:
         horloge: Callable[[], float] = time.time,
         dormir: Callable[[float], None] = time.sleep,
         journal: JournalEvenements | None = None,
+        exporteur: ExporteurDetection | None = None,
     ) -> None:
         self.client = client
         self.registre = registre
@@ -285,6 +281,9 @@ class BoucleEnLigne:
             run_id=self.run_id,
             strategie=getattr(strategy, "name", "proposed"),
         )
+        self.exporteur = exporteur
+        if exporteur is not None:
+            self.journal.abonnes.append(exporteur.observer_evenement)
 
         self.window_size = int(features_config["window_size"])
         self.stride = int(features_config["stride"])
@@ -595,7 +594,7 @@ class BoucleEnLigne:
         if decision.retrain:
             promue = self._reentrainer(fin_ts, position, decision.reason)
 
-        return ResultatFenetre(
+        resultat = ResultatFenetre(
             fin_ts=fin_ts,
             position=position,
             score=score,
@@ -606,6 +605,13 @@ class BoucleEnLigne:
             interpolee=interpolee,
             ms=ms,
         )
+        if self.exporteur is not None:
+            # Le score, le seuil et l'etat de la surveillance de derive ne sont
+            # journalises que lorsqu'ils declenchent quelque chose ; Grafana a
+            # besoin de la serie complete, fenetre par fenetre.
+            self.exporteur.observer_fenetre(resultat, decision.details)
+            self.exporteur.observer_mesures(self.mesures.moyenne, self.mesures.p95)
+        return resultat
 
     # ---------------------------------------------------------- reentrainement
 
