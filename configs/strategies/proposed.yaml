@@ -85,17 +85,38 @@ cooldown_minutes: 1440
 # M0 ; Ma et al., 2023). On ne cherche donc pas le meilleur des deux, seulement
 # a rejeter l'inutilisable. Les trois motifs de rejet sont calculables sans
 # aucune etiquette, ce qui est la regle du §6.
+#
+# BORNES CALIBREES le 26/10/2026 sur les 473 challengers du perimetre de mise au
+# point (D14), CORRIGEES le 13/11/2026 (D43). Les valeurs figees par D30 etaient
+# celles du CADRAGE (300 / 0,001 / 0,30), pas celles du calibrage : l'erreur a
+# ete trouvee a la relecture, les valeurs ci-dessous sont celles que D14 retient
+# depuis le 26/10 — donc etablies sur la mise au point, avant M3, et jamais en
+# regardant une machine d'evaluation (D17).
 validation:
   enabled: true
   # Rejet si moins de ce nombre de fenetres ont ete observees depuis le debut du
-  # flux : en dessous, on ne sait pas encore ce qu'est le comportement normal.
-  min_history: 300
+  # flux. 256 = `max_samples` du modele : entrainer une foret sur moins de
+  # fenetres que son propre echantillon n'a pas de sens. Seule borne deduite du
+  # modele et non des donnees. Ce critere ne mord jamais au point de
+  # fonctionnement de M3, `min_train_minutes` (5450) le dominant largement :
+  # aucun des rejets observes ne vient de lui.
+  min_history: 256
   # Rejet si le taux d'alertes du challenger sur la fenetre reservee sort de ces
-  # bornes. Un modele qui n'alerte jamais est inutile, un modele qui alerte sur
-  # 30 % des fenetres est inexploitable : les deux se voient sans etiquettes.
-  # Bornes a calibrer.
-  alert_rate_min: 0.001
-  alert_rate_max: 0.30
+  # bornes.
+  #
+  # Borne basse DESACTIVEE (0.0), et c'est une mesure : 98 challengers sur 473
+  # n'alertent sur aucune fenetre reservee, dont 63 SAINS, de F1 aval median
+  # 0,4202 contre 0,2605 pour l'ensemble. Un taux nul sur V signifie le plus
+  # souvent que la fenetre reservee ne contient pas d'anomalie — ce n'est pas un
+  # defaut du challenger. Les 0,1 % du cadrage rejetaient donc les meilleurs.
+  alert_rate_min: 0.0
+  # Borne haute a 0,90 et non 0,30 : les challengers sains vont legitimement
+  # jusqu'a 87 % d'alertes sur V (sur machine-1-6 a 80 % du flux, 60,1 % des
+  # fenetres aval sont reellement positives). A 0,30, le garde-fou rejetterait
+  # 37 sains sur 285 pour seulement 22 degrades sur 188 : il ferait plus de mal
+  # que de bien. Seule une borne a 0,90 ne rejette aucun sain, tout en ecartant
+  # 5 degrades dont un qui alerte sur 100 % de la fenetre reservee.
+  alert_rate_max: 0.90
 
 # Exclusion des fenetres suspectes de l'entrainement du challenger.
 # `none` PAR DEFAUT, et c'est un resultat mesure (D13) : exclure les alertes du

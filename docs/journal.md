@@ -519,6 +519,54 @@ des captures, tous faux.
 Etat du code : **441 tests passent** (289 a la fin de M4), `ruff check` et `ruff format --check` sans
 remarque sur 98 fichiers.
 
+## 2026-11-13 — Correction d'un defaut de la campagne M3 : les bornes du garde-fou (D43)
+La relecture du memoire a trouve ce que ni les tests ni les resultats n'avaient signale : la campagne
+M3 a tourne avec les bornes du garde-fou **du cadrage** (`300 / 0,001 / 0,30`) et non avec celles que
+D14 avait calibrees le 26/10 sur les 473 challengers du perimetre de mise au point (`256 / 0,0 /
+0,90`). D30 a fige les premieres **en citant D14**, qui recommandait justement les secondes et
+ecrivait que celles du cadrage « font plus de mal que de bien ».
+
+Conduite de la correction, dans cet ordre :
+1. **Verification independante** du retour avant d'y toucher : 54 challengers rejetes sur les 12
+   machines d'evaluation (36 sous la borne basse, 18 au-dessus de 0,30, taux maximal observe 0,7069),
+   19 de plus sur la mise au point. Aucun rejet ne vient du critere d'historique, `min_train_minutes`
+   le dominant : l'effet entier vient des bornes du taux d'alertes.
+2. **Sauvegarde** des resultats du garde-fou strict sous `results/*_p_strict.csv` — ils deviennent une
+   analyse de sensibilite, ils ne sont pas jetes.
+3. **Correction** des deux configurations et des defauts du code, chaque valeur portant desormais sa
+   justification chiffree a cote d'elle.
+4. **Rejeu de P seule** sur les 240 flux d'evaluation (B0, B1 et A1 ne dependent pas de ces bornes)
+   puis sur les 28 machines du scenario `none`, et regeneration de `hypotheses`, `promotions`,
+   `figures-m3` et des tableaux du chapitre 6.
+
+Resultat : **0 rejet sur 240 rejeux**, exactement ce que D14 predisait. P devient identique a A1 sur
+les scenarios injectes, a 0,06 seconde CPU pres — le cout de scorer la fenetre reservee. Le F1 de P
+passe de 0,265 a **0,277**, les fausses alertes de 2,64 a **2,07/h**. H1 et H2 sont confirmees plus
+nettement qu'avant ; **H3 devient indecidable**, et c'est le resultat : avec des bornes calibrees sur
+donnees reelles, le garde-fou ne se declenche **jamais** sous derive injectee.
+
+Le seul endroit ou il agit encore est la derive naturelle, et il y nuit : sur `machine-3-5`, un
+challenger a 92,57 % d'alertes est rejete alors que le champion qu'il devait remplacer alerte
+lui-meme sur 90,62 % des fenetres, et le F1 de P tombe a 0,072 contre 0,156 pour A1. Une borne
+**relative au champion** aurait laisse passer ce challenger ; le reglage est gele, la piste va aux
+perspectives du chapitre 7 avec le chiffre a l'appui.
+
+Deux defauts secondaires corriges au passage : `mdrift promotions` melangeait les machines de mise au
+point et d'evaluation (option `--dataset-config` ajoutee), et D32 contenait deux erreurs de redaction
+signalees par la relecture (un resultat des machines instables attribue aux stables, une moyenne
+appelee mediane). D30, D32 et D33 portent desormais la trace du defaut a l'endroit exact ou il a ete
+commis : un journal de decisions qui se corrige en silence ne vaut rien.
+
+Ce que l'incident coute et ce qu'il apprend : une valeur calibree qui n'est tenue par aucun test n'est
+pas figee, elle est seulement ecrite. La contradiction se tenait entre deux decisions et deux
+fichiers de configuration, chacun coherent pris seul — exactement ce qu'une relecture ne voit pas. Le
+test `test_les_bornes_figees_sont_celles_calibrees_et_non_celles_du_cadrage` ancre maintenant les
+trois valeurs dans les configurations **et** dans l'objet construit. A declarer comme limite
+methodologique au 6.3.3 et au 7.3.
+
+Etat du code : **442 tests passent**, `ruff check` et `ruff format --check` sans remarque sur
+98 fichiers.
+
 ## Prochaine etape : M6
 Test final sur infrastructure reelle, a faire avec Sidy sur le serveur : enregistrer des sessions
 portant des **derives reelles** (deploiement d'une nouvelle version d'une appli de test, changement

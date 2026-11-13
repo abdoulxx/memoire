@@ -409,3 +409,41 @@ def test_le_refroidissement_ne_peut_pas_mordre_avant_le_moniteur() -> None:
     propose = load_config("strategies/proposed.yaml")
     plancher_moniteur = int(drift["recent_windows"]) + int(drift["confirmation_windows"])
     assert propose["cooldown_minutes"] <= plancher_moniteur
+
+
+def test_les_bornes_figees_sont_celles_calibrees_et_non_celles_du_cadrage() -> None:
+    """Le test qui manquait, et dont l'absence a coute une campagne (D43).
+
+    D14 a calibre les bornes du garde-fou le 26/10/2026 sur les 473 challengers
+    du perimetre de mise au point et retenu 256 / 0,0 / 0,90. D30 les a pourtant
+    figees a 300 / 0,001 / 0,30 — les valeurs du **cadrage**, celles que D14
+    declare justement faire « plus de mal que de bien » — tout en citant D14.
+    L'erreur a traverse toute la campagne M3 : 54 challengers rejetes sur les 12
+    machines d'evaluation, dont aucun n'aurait du l'etre, et un verdict de H3
+    mesurant l'effet de bornes que la mise au point avait ecartees.
+
+    Une relecture n'avait pas suffi : la contradiction etait entre deux fichiers
+    de documentation et deux fichiers de configuration, et chacun pris seul
+    paraissait coherent. Ce test ancre les valeurs calibrees dans le code, ou
+    elles ne peuvent plus deriver en silence. Si une nouvelle mesure les change,
+    il faut changer ce test **et** ecrire la decision correspondante : c'est
+    exactement le garde-fou qui a manque.
+    """
+    calibrees_d14 = {"min_history": 256, "alert_rate_min": 0.0, "alert_rate_max": 0.90}
+
+    for nom in ("proposed", "ablation"):
+        validation = load_config(f"strategies/{nom}.yaml")["validation"]
+        for cle, attendu in calibrees_d14.items():
+            assert float(validation[cle]) == attendu, (nom, cle, validation[cle])
+
+    # Les valeurs du cadrage ne doivent plus apparaitre, ni dans les
+    # configurations, ni comme defaut du code : un fichier incomplet retomberait
+    # sinon sur les bornes ecartees sans que rien ne le signale.
+    strategie = build_strategy(
+        load_config("strategies/proposed.yaml"),
+        load_config("features.yaml"),
+        load_config("drift.yaml"),
+        60,
+    )
+    assert strategie.min_history == 256
+    assert (strategie.alert_rate_min, strategie.alert_rate_max) == (0.0, 0.90)

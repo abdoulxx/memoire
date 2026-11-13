@@ -59,11 +59,15 @@ reserved_minutes: 1440
 # confirmation soit possible.
 cooldown_minutes: 1440
 
+# Les bornes sont sans effet ici (`enabled: false`) mais doivent rester
+# identiques a celles de `proposed.yaml` : un test compare les deux fichiers, et
+# une divergence ferait mesurer a l'ecart P - A1 autre chose que la validation.
+# Corrigees le 13/11/2026 avec celles de P (D43).
 validation:
   enabled: false
-  min_history: 300
-  alert_rate_min: 0.001
-  alert_rate_max: 0.30
+  min_history: 256
+  alert_rate_min: 0.0
+  alert_rate_max: 0.90
 
 exclusion:
   method: none

@@ -89,10 +89,10 @@ def build_strategy(
         else 0,
         validation_enabled=bool(validation.get("enabled", True)),
         min_train_windows=windows(strategy_config.get("min_train_minutes", 0)),
-        min_history=int(validation.get("min_history", 300)),
+        min_history=int(validation.get("min_history", 256)),
         alert_rate_bounds=(
-            float(validation.get("alert_rate_min", 0.001)),
-            float(validation.get("alert_rate_max", 0.30)),
+            float(validation.get("alert_rate_min", 0.0)),
+            float(validation.get("alert_rate_max", 0.90)),
         ),
         exclusion_method=str(exclusion.get("method", "none")),
         exclusion_percentile=float(exclusion.get("percentile", 99.0)),

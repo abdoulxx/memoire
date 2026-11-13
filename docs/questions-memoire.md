@@ -587,3 +587,54 @@ Les trois sont transmises, avec deux rectifications de ma part :
 
 S'y ajoute une décision nouvelle, qui lui revient : refaire les mesures de D13 et D14 sur le seul périmètre de mise
 au point, ou déclarer la limite machine-2-1 au 6.3.3 (voir R2).
+
+---
+
+# Retour 3 du Claude rédacteur (12/11/2026) — à traiter AVANT M6
+
+Relecture de M1 à M5 pour la rédaction des chapitres 4 à 6. Les chiffres principaux de `docs/tableaux_chapitre6.md` sont confirmés par un recalcul indépendant depuis `results/summary.csv` (F1, rappel par événement, fausses alertes, réentraînements, secondes CPU, promotions dégradantes : identiques). Un défaut de protocole et deux erreurs de rédaction, en revanche.
+
+## R7 (bloquant). Les bornes du garde-fou utilisées en M3 ne sont pas celles calibrées en D14
+- D14 (calibrage du 26/10 sur les 16 machines de mise au point, **avant** M3) retient `min_train_windows: 256`, `alert_rate_min: 0.0` (borne basse désactivée), `alert_rate_max: 0.90`, et écrit que les valeurs du cadrage (0,001 / 0,30 / 300) « font plus de mal que de bien ».
+- D30 (gel du 27/10) fige pourtant `min_history: 300`, `alert_rate_min: 0.001`, `alert_rate_max: 0.3` dans `proposed.yaml` et `ablation.yaml`, en citant D14. Le `config.yaml` des rejeux M3 de P le confirme.
+- Effet mesuré dans les journaux d'événements de M3 : **73 rejets**, tous `taux_alertes_hors_bornes` — **48** pour un taux < 0,001 (exactement le cas que D14 déclare sain) et **25** pour un taux entre 0,30 et 0,86. **Aucun** n'aurait été rejeté avec les bornes de D14 (aucun taux > 0,90).
+- Conséquence : le verdict H3 de D32 (P moins de promotions dégradantes que A1, mais −1,2 point de F1) mesure l'effet de bornes que la mise au point avait écartées. Avec les bornes de D14, P devrait égaler A1, comme D14 le prédit.
+- **Demande** : (1) corriger `proposed.yaml` (et la valeur par défaut de `factory.py`) avec les bornes de D14 ; (2) rejouer **P seule** sur les 240 flux M3 (B0, B1 et A1 ne dépendent pas des bornes) et sur la dérive naturelle, régénérer `hypotheses.csv`, les tableaux et les figures ; (3) **conserver** les résultats actuels de P sous un autre nom (variante « garde-fou strict ») : c'est une analyse de sensibilité utile au chapitre 6, à présenter comme telle ; (4) consigner l'erreur et sa correction dans une décision (chronologie : bornes fixées sur la mise au point le 26/10, avant M3, donc la correction n'est pas un réglage sur l'évaluation) ; (5) utiliser les bornes corrigées pour M6.
+
+## R8. D32 attribue aux machines stables un résultat des machines instables
+D32 et l'entrée M3 du journal écrivent que « sur les 15 machines stables, le garde-fou transforme 3 promotions dégradantes en 0 sans aucun coût en F1 ». Or P et A1 ne réentraînent jamais sur les stables (0 confirmation). Les 3 → 0 viennent des **13 machines instables** (dérive naturelle) : A1 3 promotions dégradantes, P 0, F1 0,259 (P) contre 0,253 (A1). À corriger (et à revoir après R7).
+
+## R9. « Délai médian de confirmation 4 029 min » (D32)
+Le tableau 1 donne 4 029 ± 330 comme **moyenne** sur les machines (après moyenne des scénarios puis des graines). Ce n'est pas une médiane : la médiane brute des 168 délais de P vaut 3 576,5 min. Corriger le mot dans D32.
+
+## Pour information
+- Ma, Zhao, Zhang et Akoglu (2023) : pagination **19–35** confirmée par les métadonnées Crossref (vol. 25, n° 1, juin 2023), et la phrase « none of the existing and adapted strategies would be practically useful: stand-alone ones are not significantly different from random » figure dans l'article de SIGKDD Explorations lui-même. Le [A VERIFIER] de D14 peut être levé.
+
+# Retour 4 du Claude rédacteur (13/11/2026) — R7 rejoué sur une copie, à reporter dans le dépôt
+
+R7 n'étant pas traité, je l'ai exécuté sur une **copie** du dépôt (Linux, `uv sync --frozen`, SMD retéléchargé : 112 fichiers, SHA-256 identiques au manifeste). Contrôle préalable : le rejeu `machine-1-2 / s1_soudaine / proposed / seed42` de M3 y est reproduit à l'identique. Rien n'a été modifié dans ce dépôt, à part ce fichier.
+
+## Correction de mes chiffres de R7
+Les rejets de la première exécution de P (campagne M3) sont **54**, pas 73 : **36** pour un taux < 0,001 (29 à 0, 7 à 0,0007) et **18** pour un taux > 0,30 (max **0,7069**, pas 0,86). Total identique à `sum(cost_n_rejected)` de summary.csv.
+
+## À faire dans le dépôt (avant M6)
+1. `configs/strategies/proposed.yaml` et `ablation.yaml` : `min_history: 256`, `alert_rate_min: 0.0`, `alert_rate_max: 0.90` ; mêmes valeurs par défaut dans `src/strategies/factory.py` (et `proposed.py`).
+2. Sauvegarder d'abord les lignes `proposed` actuelles : `results/summary_p_garde_fou_strict.csv` (240 lignes M3) et `results/summary_m3_derive_naturelle_p_strict.csv` (28 lignes).
+3. Rejouer P seule : `mdrift campaign --strategies proposed --scenarios s1_soudaine,s2_incrementale,s3_graduelle,s4_recurrente --seeds 42,43,44,45,46 --dataset-config datasets/smd_eval.yaml --force` puis `--scenarios none --seeds 42 --dataset-config datasets/smd_all.yaml --force --summary-path results/summary_m3_derive_naturelle.csv`.
+4. `mdrift hypotheses`, `mdrift hypotheses --summary-path results/summary_p_garde_fou_strict.csv…` (sur une synthèse complète avec l'ancien P) -> `results/hypotheses_p_strict.csv`, `mdrift figures-m3`, `mdrift promotions --scenarios s1_soudaine,s2_incrementale,s3_graduelle,s4_recurrente --delta 0.10,0.05,0.20 --path results/promotions_m3.csv` (et la même chose sur les traces de l'ancien P -> `results/promotions_m3_p_strict.csv`).
+5. Décision D43 (correction, chronologie : bornes fixées le 26/10 sur la mise au point, avant M3) ; corriger D32 selon R8 et R9 ; un test qui compare les bornes figées aux valeurs de D14 éviterait la récidive.
+
+## Résultats attendus (ce que j'obtiens ; tout sauf les secondes CPU doit être identique)
+- P **identique à A1 sur les 240 rejeux** : 0 rejet, 370 réentraînements, 370 promotions. F1 0,277 ; F1 après dérive 0,326 ; rappel par événement 0,742 ; fausses alertes 2,07/h ; promotions dégradantes 0,158 par rejeu.
+- H1 : fausses alertes conforme (4/32, p Holm < 0,0001) ; rappel par événement contraire (2/17, p Holm 0,0016) ; F1 et F1 après dérive sans différence (22/14, p Holm 0,856).
+- H2 : réentraînements et secondes 0/48 conforme ; F1 26/22 p Holm 0,273 ; F1 après dérive 24/24 p Holm 0,764 ; fausses alertes 42/6 (P au-dessus).
+- H3 : indécidable partout (0 écart).
+- Dérive naturelle, 13 instables : P F1 0,247, 6,60 FA/h, 0,92 réentraînement, 0,23 promotion dégradante ; **un seul rejet** (machine-3-5, taux 0,9257 sur V) qui fait tomber le F1 de P à 0,072 contre 0,156 pour A1. Stables : P = A1 = B0.
+- Promotions (δ = 0,10) : B1 3 900 / 124 dégradantes ; P = A1 370 / 38 ; P strict 276 / 29.
+
+Les secondes CPU de P doivent venir de ton poste (comme B1) : c'est la seule valeur marquée « à confirmer » dans le mémoire.
+
+## Ensuite
+- M6 avec ces bornes corrigées.
+- M7 : il n'y a pas encore de `.gitlab-ci.yml` dans le dépôt.
+- Fichiers temporaires laissés par moi dans `data/` : `_copie_code_pour_claude.tgz`, `_copie_infra_pour_claude.tgz`, `_copie_runs_m3.tar` (240 Mo). Ils peuvent être supprimés.

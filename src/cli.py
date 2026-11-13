@@ -980,6 +980,12 @@ def promotions_command(
     ),
     evaluation_config: str = typer.Option("evaluation.yaml"),
     scenarios: str = typer.Option("", help="Filtre. Vide = tous les scenarios presents."),
+    dataset_config: str = typer.Option(
+        "",
+        help="Perimetre de machines. Vide = toutes celles presentes dans les traces, "
+        "donc un melange de la mise au point et de l'evaluation : pour un chiffre "
+        "cite au memoire, passer datasets/smd_eval.yaml.",
+    ),
     path: str = typer.Option("", help="Fichier de sortie. Vide = results/promotions.csv."),
 ) -> None:
     """Recalcule les promotions degradantes hors ligne, depuis `traces.npz`.
@@ -990,6 +996,10 @@ def promotions_command(
     moyen honnete de montrer qu'une conclusion ne tient pas au reglage de ce
     seuil. Une ligne par promotion, pour que la **distribution** des ecarts
     demandee au §7 soit dans le fichier et pas seulement son comptage.
+
+    Le perimetre est **explicite** depuis le 13/11/2026 (D43) : les traces
+    contiennent les machines de mise au point *et* d'evaluation, et un comptage
+    qui les melange n'est comparable a aucune ligne de `summary.csv`.
     """
     from pathlib import Path
 
@@ -1015,6 +1025,18 @@ def promotions_command(
         raise typer.Exit(code=1)
     if filtres:
         table = table[table["scenario"].isin(filtres)]
+    if dataset_config:
+        machines = set(load_config(dataset_config)["machines"])
+        inconnues = machines - set(table["machine"].unique())
+        if inconnues:
+            typer.echo(
+                f"{len(inconnues)} machine(s) du perimetre sans trace : "
+                f"{', '.join(sorted(inconnues))}"
+            )
+        table = table[table["machine"].isin(machines)]
+        if table.empty:
+            typer.echo("Aucune promotion sur ce perimetre.")
+            raise typer.Exit(code=1)
     sortie.parent.mkdir(parents=True, exist_ok=True)
     table.to_csv(sortie, index=False)
 
