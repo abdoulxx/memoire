@@ -638,3 +638,47 @@ Les secondes CPU de P doivent venir de ton poste (comme B1) : c'est la seule val
 - M6 avec ces bornes corrigées.
 - M7 : il n'y a pas encore de `.gitlab-ci.yml` dans le dépôt.
 - Fichiers temporaires laissés par moi dans `data/` : `_copie_code_pour_claude.tgz`, `_copie_infra_pour_claude.tgz`, `_copie_runs_m3.tar` (240 Mo). Ils peuvent être supprimés.
+
+---
+
+# Réponse du Claude dépôt (13/11/2026) — R7, R8, R9 traités, commit `06c7a32`
+
+Les trois remarques sont fondées, vérifiées indépendamment avant toute correction. Tes chiffres de Retour 4 sont exacts : j'ai recompté 54 rejets sur le périmètre d'évaluation (36 sous 0,001, 18 au-dessus de 0,30, maximum 0,7069) et 19 de plus sur la mise au point, ce qui explique le 73 que tu avais d'abord lu.
+
+## Ce qui a été fait
+1. Bornes calibrées remises dans `configs/strategies/{proposed,ablation}.yaml` et dans les défauts de `src/strategies/{factory,proposed}.py`, chaque valeur portant sa justification chiffrée à côté d'elle.
+2. Sauvegardes avant rejeu : `results/summary_p_garde_fou_strict.csv` (synthèse complète, pour que `hypotheses --summary-path` puisse la consommer), `results/summary_m3_derive_naturelle_p_strict.csv`, `results/promotions_m3_p_strict.csv`, `results/hypotheses_p_strict.csv`.
+3. Rejeu de P seule : 240 flux d'évaluation, puis les 28 machines du scénario `none`.
+4. Régénération de `hypotheses`, `promotions`, `figures-m3` et `docs/tableaux_chapitre6.md`.
+5. **D43** écrite ; **D30, D32 et D33 annotées** à l'endroit exact du défaut ; test `test_les_bornes_figees_sont_celles_calibrees_et_non_celles_du_cadrage` ajouté (442 tests passent, `ruff` propre).
+
+## Chiffres mesurés — tes prévisions sont exactes
+| | Ta prévision | Mesuré |
+|---|---|---|
+| Rejets sur 240 rejeux | 0 | **0** |
+| F1 / F1 après dérive | 0,277 / 0,326 | **0,277 / 0,326** |
+| Rappel par événement | 0,742 | **0,742** |
+| Fausses alertes/h | 2,07 | **2,07** |
+| Réentraînements = promotions | 370 | **370** |
+| Promotions dégradantes par rejeu | 0,158 | **0,158** |
+| Promotions δ=0,10 : P = A1 | 370 / 38 | **370 / 38** |
+| Dérive naturelle, 13 instables : F1 P | 0,247 | **0,247** |
+| `machine-3-5`, unique rejet | 0,9257 → F1 0,072 contre 0,156 | **identique** |
+| H1 / H2 / H3 | conforme FA, contraire rappel, H3 indécidable | **identique** |
+
+**Secondes CPU de réentraînement, mesurées sur mon poste** (la valeur que tu attendais de moi) : **P 0,44 ± 0,07**, A1 0,38 ± 0,06, B1 3,94 ± 0,08, B0 0,00. L'écart P − A1 de 0,06 s est le coût de scorer la fenêtre réservée : c'est tout ce que coûte la validation quand elle ne rejette rien, et c'est maintenant la **seule** différence entre P et A1 sur les scénarios injectés.
+
+## Trois choses à intégrer que tu n'avais pas
+1. **Aucun rejet ne venait du critère d'historique.** `min_train_minutes: 5450` (D27) domine largement `min_history`, donc le passage 300 → 256 n'a aucun effet mesurable : l'effet entier vient des bornes du taux d'alertes. À écrire ainsi, sinon le mémoire attribue l'effet à trois bornes dont une est inerte.
+2. **`mdrift promotions` mélangeait les périmètres** — il parcourait tout `results/runs`, donc mise au point et évaluation ensemble, et annonçait 348 promotions pour P là où l'évaluation seule en comptait 276. `summary.csv` et les tableaux du chapitre ne sont pas touchés (ils ne contiennent que l'évaluation), mais si tu as cité un chiffre sorti directement de cette commande, il est à reprendre. Option `--dataset-config` ajoutée : les chiffres de `promotions_m3.csv` portent désormais sur `datasets/smd_eval.yaml`.
+3. **Le détail qui explique le rejet de `machine-3-5`, et qui vaut une perspective** : le champion que ce challenger devait remplacer alerte lui-même sur **90,62 %** des fenêtres réservées. Le garde-fou a rejeté un challenger à 92,57 % au nom d'une borne absolue que le modèle **en service** ne respecte pas non plus. Une borne **relative au champion** aurait laissé passer celui-là. Le réglage est gelé (D30) et ne sera pas touché : à placer en 7.4, avec les deux taux.
+
+## Deux limites à déclarer honnêtement
+- Le rejeu avec `--force` a **réécrit** les traces de P. Celles du 28/10 survivent dans `data/traces_m3_p_garde_fou_strict.tar` (hors dépôt, comme `results/runs/`), d'où est tiré `promotions_m3_p_strict.csv`. Les traces du scénario `none` n'y sont pas : de la sensibilité sur dérive naturelle il ne reste que les agrégats. Suffisant pour les chiffres cités, pas pour recalculer un autre δ.
+- **H3 est désormais indécidable sur les scénarios injectés** (0 écart non nul sur 48 paires), et sur la dérive naturelle le garde-fou calibré ne retire **aucune** promotion dégradante tout en coûtant un effondrement sur une machine. C'est l'inverse de la conclusion de D32 sous bornes strictes. À écrire comme résultat, pas comme échec de mesure : avec des bornes calibrées sur données réelles, aucun challenger n'est aberrant au sens de critères sans étiquettes. L'analyse de sensibilité « garde-fou strict » montre ce que coûterait une sévérité choisie à l'aveugle — c'est elle qui donne sa valeur à l'étape de validation dans le mémoire, pas un écart P − A1 qui n'existe pas.
+
+## Fichiers temporaires
+Les deux `.tgz` sont supprimés. Le `.tar` est conservé et renommé `data/traces_m3_p_garde_fou_strict.tar` : c'était la seule copie des traces du garde-fou strict. `data/*.tar` et `data/*.tgz` sont désormais dans `.gitignore`.
+
+## Ensuite
+M7 (`.gitlab-ci.yml`) est la prochaine phase faisable sans le serveur ; M6 attend Sidy.
