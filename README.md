@@ -76,6 +76,24 @@ uv run ruff check .    # lint
 uv run pytest          # tests
 ```
 
+Sur Linux, les trois controles de l'integration continue se lancent par leurs cibles de Makefile,
+qui sont exactement celles que la CI appelle :
+
+```bash
+make lint     # ruff check + ruff format --check
+make test     # pytest
+make build    # wheel installe dans un environnement neuf, point d'entree appele
+```
+
+### Integration continue
+
+Deux declencheurs, un seul controle. `.gitlab-ci.yml` est le livrable demande par le cadrage
+(jalon M7) et tourne tel quel sur une instance GitLab ; `.github/workflows/ci.yml` est celui qui
+s'execute reellement, le depot etant heberge sur GitHub. Les deux appellent les memes cibles du
+Makefile, et un test (`tests/test_ci.py`) verifie qu'ils ne divergent pas. La CI ne rejoue pas la
+campagne (plusieurs heures) et ne telecharge pas le SMD : le seul test qui exige les donnees se
+declare `skipped`.
+
 ## Organisation
 
 - `configs/` — tous les parametres (aucune valeur en dur dans le code)

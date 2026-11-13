@@ -1,0 +1,62 @@
+# Integration continue executee reellement — jalon M7 du cadrage (CLAUDE.md §10).
+#
+# Le cadrage demande GitLab CI, et `.gitlab-ci.yml` est bien dans le depot : il
+# est le livrable, il tourne tel quel sur une instance GitLab et c'est lui qui
+# est decrit au memoire. Mais le depot est heberge sur **GitHub**, ou un
+# `.gitlab-ci.yml` ne declenche rien : sans ce second fichier, le jalon M7 ne
+# produirait aucune capture de pipeline, qui est precisement son livrable.
+#
+# Les deux fichiers appellent les **memes trois cibles du Makefile** (`lint`,
+# `test`, `build`), celles que Sidy tape sur son poste. Le Makefile est la seule
+# definition de ce qui est verifie ; les deux CI ne sont que des declencheurs.
+# Voir D44.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  controles:
+    runs-on: ubuntu-latest
+    env:
+      # matplotlib n'a pas d'affichage sur un agent.
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+
+      # uv est epingle a la version du poste de developpement : une CI qui
+      # resout les dependances autrement que le poste ne prouve rien sur ce qui
+      # a produit les resultats des chapitres 6.
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.18"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # `--frozen` echoue si `uv.lock` ne correspond pas a `pyproject.toml` :
+      # c'est le garde-fou de reproductibilite, pas une optimisation.
+      - name: Installer les dependances epinglees
+        run: uv sync --frozen
+
+      - name: Forme du code
+        run: make lint
+
+      # Le seul test qui exige le SMD se declare `skipped` au lieu d'echouer :
+      # les donnees ne sont pas dans le depot (§4 du cadrage). La campagne M3
+      # n'est pas rejouee ici — plusieurs heures de calcul.
+      - name: Tests
+        run: make test
+
+      - name: Paquet installable
+        run: make build
+
+      - name: Conserver le wheel
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/
+          retention-days: 30

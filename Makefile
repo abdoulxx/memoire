@@ -1,6 +1,6 @@
 # Enveloppe fine autour du CLI, pour la CI GitLab (Linux).
 # Sur Windows, utiliser directement : uv run mdrift <commande>
-.PHONY: install lint test smd-download dashboard up down ps logs chaos-list stop-chaos stop-chaos-force
+.PHONY: install lint test build smd-download dashboard up down ps logs chaos-list stop-chaos stop-chaos-force
 
 install:
 	uv sync
@@ -11,6 +11,23 @@ lint:
 
 test:
 	uv run pytest
+
+# Le troisieme controle exige par le jalon M7, apres le lint et les tests.
+# Construire le wheel ne suffit pas : ce qui casse en pratique, c'est le
+# **contenu** du paquet. `pyproject.toml` declare `packages = ["src", "infra"]`
+# parce que le CLI importe `infra.injector` ; un paquet qui n'embarquerait que
+# `src` s'installerait sans erreur et echouerait a la premiere commande `chaos*`.
+# Le wheel est donc installe dans un environnement **neuf**, hors du depot, et on
+# verifie que le point d'entree `mdrift` repond et que les deux paquets
+# s'importent. Teste depuis le dossier d'installation pour qu'aucun import ne
+# puisse passer par les sources du depot.
+build:
+	rm -rf dist build-verif
+	uv build
+	uv venv --python 3.11 build-verif
+	VIRTUAL_ENV=build-verif uv pip install --quiet dist/*.whl
+	cd build-verif && ./bin/mdrift --help > /dev/null
+	cd build-verif && ./bin/python -c "import src.cli, infra.injector; print('paquet importable')"
 
 smd-download:
 	uv run mdrift smd-download

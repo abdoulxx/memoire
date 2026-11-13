@@ -1,0 +1,111 @@
+# Integration continue — jalon M7 du cadrage (CLAUDE.md §10).
+#
+# Trois controles, dans cet ordre : la forme (ruff), le comportement (pytest),
+# puis le paquet (wheel installe dans un environnement neuf). Un quatrieme,
+# facultatif, construit l'image du service de detection quand elle change.
+#
+# Ce que la CI garantit, et c'est la phrase a reprendre au memoire : les chiffres
+# des chapitres 6 sont produits par un code dont le lint, les tests et
+# l'empaquetage sont verifies a chaque commit, sur une machine qui n'est pas
+# celle de l'auteur et a partir des versions **epinglees** par `uv.lock`.
+#
+# Ce qu'elle ne garantit pas, et qui doit etre dit aussi : elle ne rejoue pas la
+# campagne M3 (plusieurs heures de calcul) et ne telecharge pas le SMD (§4
+# du cadrage : les donnees ne sont pas dans le depot). Le seul test qui exige le
+# SMD se declare `skipped` au lieu d'echouer, ce qui est voulu.
+#
+# ATTENTION, a dire tel quel : le depot est heberge sur GitHub, pas sur GitLab.
+# Ce fichier est le livrable demande par le cadrage et tourne tel quel sur une
+# instance GitLab (ou un miroir), mais la capture de pipeline du memoire vient
+# de `.github/workflows/ci.yml`, qui execute les **memes** cibles du Makefile.
+# Voir D44.
+
+stages:
+  - qualite
+  - tests
+  - paquet
+  - image
+
+# uv est epingle a la version du poste de developpement : une CI qui resout les
+# dependances autrement que le poste ne prouve rien sur ce qui a produit les
+# resultats. `uv sync --frozen` echoue si `uv.lock` ne correspond pas a
+# `pyproject.toml`, ce qui est exactement le garde-fou voulu.
+default:
+  image: python:3.11-slim
+  before_script:
+    - pip install --quiet --no-cache-dir "uv==0.11.18"
+    - uv sync --frozen
+  cache:
+    key:
+      files:
+        - uv.lock
+    paths:
+      - .venv/
+      - .cache/uv/
+
+variables:
+  UV_CACHE_DIR: .cache/uv
+  # Les notebooks et matplotlib n'ont pas d'affichage sur un agent.
+  MPLBACKEND: Agg
+
+qualite:
+  stage: qualite
+  script:
+    - uv run ruff check .
+    - uv run ruff format --check .
+
+tests:
+  stage: tests
+  script:
+    - uv run pytest --junitxml=junit.xml
+  artifacts:
+    when: always
+    reports:
+      junit: junit.xml
+    expire_in: 1 week
+
+# Le wheel est installe dans un environnement neuf et le point d'entree est
+# appele : voir le commentaire de la cible `build` du Makefile pour la raison.
+paquet:
+  stage: paquet
+  script:
+    # `python:3.11-slim` n'embarque pas make. On l'installe plutot que de
+    # recopier les commandes de la cible `build` ici, ou elles finiraient par
+    # diverger de celles que Sidy tape sur son poste.
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends make
+    - make build
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 month
+
+# L'image du service de detection (M5). Construite seulement quand ce qui la
+# definit change : elle installe une cinquantaine de paquets et n'a rien a
+# verifier si ni le Dockerfile ni les dependances n'ont bouge. Jamais poussee
+# vers un registre — rien dans ce depot ne doit atterrir sur un registre public
+# (§4.3), et le serveur construit son image localement.
+image-detection:
+  stage: image
+  image: docker:27-cli
+  services:
+    - docker:27-dind
+  before_script: []
+  cache: {}
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  script:
+    - docker build -f infra/detection/Dockerfile -t memoire-detection:ci .
+    - docker run --rm memoire-detection:ci python -c "import src.cli; print('image utilisable')"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - infra/detection/Dockerfile
+        - pyproject.toml
+        - uv.lock
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - infra/detection/Dockerfile
+        - pyproject.toml
+        - uv.lock
+    - when: manual
+      allow_failure: true

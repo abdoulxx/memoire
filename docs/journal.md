@@ -567,6 +567,50 @@ methodologique au 6.3.3 et au 7.3.
 Etat du code : **442 tests passent**, `ruff check` et `ruff format --check` sans remarque sur
 98 fichiers.
 
+## 2026-11-13 — M7, partie CI : trois controles, deux declencheurs (D44)
+M7 est pris maintenant, hors de l'ordre des jalons, parce que c'est la seule phase qui n'a pas besoin
+du serveur : M6 attend Sidy. Il en reste la video de demonstration, qui attend elle aussi le serveur.
+
+La CI verifie **trois** choses, et ce sont trois cibles du Makefile pour que la CI et le poste de
+developpement ne puissent pas verifier deux choses differentes :
+- `make lint` — `ruff check` et `ruff format --check` ;
+- `make test` — les 454 tests ;
+- `make build` — le wheel construit, installe dans un environnement **neuf hors du depot**, et le
+  point d'entree `mdrift` appele depuis le dossier d'installation. Construire le wheel ne prouve
+  rien : ce qui casse est son **contenu**. `pyproject.toml` declare `packages = ["src", "infra"]`
+  parce que le CLI importe `infra.injector` ; un paquet qui n'embarquerait que `src` s'installerait
+  sans erreur et echouerait a la premiere commande d'injection. Verifie : 50 fichiers sous `src/`,
+  23 sous `infra/`, `mdrift --help` repond, `import src.cli, infra.injector` passe.
+
+**Le depot est sur GitHub, pas sur GitLab.** Le cadrage demande GitLab CI et le memoire le decrit
+ainsi ; un `.gitlab-ci.yml` ne declenche rien sur GitHub, donc le jalon ne produirait aucune capture
+de pipeline, qui est precisement son livrable. Les deux fichiers existent : `.gitlab-ci.yml` est le
+livrable demande et tourne tel quel sur une instance GitLab, `.github/workflows/ci.yml` est celui qui
+s'execute. Ils appellent les memes cibles, et `tests/test_ci.py` (12 tests) tient l'invariant : memes
+cibles, meme version de `uv` epinglee des deux cotes, installation depuis `uv.lock` avec `--frozen`,
+aucun `campaign` ni `smd-download`, aucun `docker push`, et YAML valide des deux cotes — un
+`.gitlab-ci.yml` casse ne se verrait autrement qu'au prochain push sur GitLab, que personne ne fera
+avant la soutenance. C'est la lecon de D43 appliquee le jour meme : deux fichiers qui decrivent le
+meme controle divergent en silence.
+
+Ce que la CI **ne** fait pas, et qui doit etre dit au memoire aussi bien que ce qu'elle fait : elle ne
+rejoue pas la campagne M3 (plusieurs heures) et ne telecharge pas le SMD (§4 : les donnees ne sont pas
+dans le depot). Le seul test qui exige les donnees se declare `skipped` au lieu d'echouer — une CI
+rouge pour une donnee absente devient une CI qu'on cesse de lire. La reproductibilite des chiffres
+vient de `uv.lock` et des configurations sauvegardees a cote de chaque execution, pas de la CI.
+
+### Ce que Sidy doit faire pour clore M7
+1. Pousser sur `main` et verifier le pipeline **vert** dans l'onglet Actions de GitHub, puis en faire
+   une capture recadree (sans nom de compte si possible) : c'est le livrable du jalon.
+2. Si le memoire doit montrer une interface **GitLab**, creer un miroir du depot sur gitlab.com et y
+   pousser une fois : `.gitlab-ci.yml` est pret et n'a besoin d'aucun secret. A dire tel quel dans le
+   memoire, miroir ou pas.
+3. La video de demonstration, apres M5 et M6 : pile en ligne, tableaux de bord, une anomalie injectee,
+   une derive confirmee, une promotion, une notification Telegram.
+
+Etat du code : **454 tests passent** (442 avant la CI), `ruff check` et `ruff format --check` sans
+remarque sur 99 fichiers.
+
 ## Prochaine etape : M6
 Test final sur infrastructure reelle, a faire avec Sidy sur le serveur : enregistrer des sessions
 portant des **derives reelles** (deploiement d'une nouvelle version d'une appli de test, changement

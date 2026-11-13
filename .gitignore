@@ -31,3 +31,7 @@ Memoire_SAMB_gabarit_IUA.docx
 # traces du 28/10, conservee hors depot comme results/runs/.
 data/*.tar
 data/*.tgz
+
+# Artefacts de construction (make build)
+dist/
+build-verif/
