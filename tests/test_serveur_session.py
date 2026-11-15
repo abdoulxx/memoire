@@ -110,7 +110,7 @@ def test_la_configuration_reelle_se_lit_et_decrit_les_metriques_du_tableau_de_bo
     # Le pas doit etre celui du SMD : le meme code de fenetrage sert aux deux
     # sources, et une fenetre de 10 points doit valoir 10 minutes des deux cotes.
     assert reglages.pas_s == load_config("datasets/smd.yaml").get("sampling_interval_seconds", 60)
-    assert "cpu_hote" in reglages.noms
+    assert "cpu_appli" in reglages.noms
     assert len(reglages.noms) == len(set(reglages.noms))
     for metrique in reglages.metriques:
         assert MARQUE_RATE not in metrique.expression(reglages.rate_interval)

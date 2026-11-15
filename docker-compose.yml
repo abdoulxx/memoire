@@ -84,6 +84,12 @@ services:
       - prometheus-data:/prometheus
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${PROM_PORT:-9090}:9090"
+    # Memoire est un serveur de production partage (D45) : les applications
+    # qui y tournent deja n'ont pas de limite memoire. Sans la sienne, c'est
+    # l'un des conteneurs de la pile qui grossirait le plus en cas de fuite, et
+    # Linux tuerait alors le plus gros processus de l'hote au hasard des autres
+    # conteneurs plutot qu'un conteneur du memoire.
+    mem_limit: ${PROM_MEMORY:-768m}
     labels:
       memoire.role: collecte
     depends_on:
@@ -113,6 +119,8 @@ services:
     # souvent deja pris par un node_exporter installe sur la machine.
     expose:
       - "9100"
+    # Meme raison que prometheus plus haut (D45).
+    mem_limit: ${NODE_EXPORTER_MEMORY:-64m}
     labels:
       memoire.role: collecte
     networks:
@@ -168,6 +176,9 @@ services:
     # son interface n'a rien a faire sur un port publie.
     expose:
       - "8080"
+    # Meme raison que prometheus plus haut (D45) : privilegie et cgroup host ne
+    # dispensent pas d'une limite memoire, les deux sont des sujets distincts.
+    mem_limit: ${CADVISOR_MEMORY:-256m}
     labels:
       memoire.role: collecte
     networks:
@@ -196,6 +207,8 @@ services:
       - grafana-data:/var/lib/grafana
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    # Meme raison que prometheus plus haut (D45).
+    mem_limit: ${GRAFANA_MEMORY:-256m}
     labels:
       memoire.role: visualisation
     depends_on:
@@ -255,7 +268,10 @@ services:
     # borne pour qu'une fuite de son cote n'emporte pas le serveur, mais plus
     # large que l'appli de test, qui elle est faite pour saturer.
     cpus: ${MLFLOW_CPUS:-1.0}
-    mem_limit: ${MLFLOW_MEMORY:-1g}
+    # Abaisse de 1g a 512m (D45), en meme temps que les quatre bornes ajoutees
+    # plus haut : aucun des sept conteneurs de la pile n'est plus sans
+    # plafond memoire.
+    mem_limit: ${MLFLOW_MEMORY:-512m}
     healthcheck:
       # L'image n'embarque pas curl ; elle embarque Python, par construction.
       test:

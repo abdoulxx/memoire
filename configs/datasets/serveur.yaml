@@ -44,28 +44,28 @@ prometheus:
 # B) : sur le serveur Linux elles doivent etre la, et un enregistrement qui les
 # perdrait doit s'arreter net.
 metriques:
-  - nom: cpu_hote
-    expr: '100 * (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[RATE])))'
-    obligatoire: true
-
-  - nom: memoire_hote
-    expr: "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)"
-    obligatoire: true
-
-  - nom: charge_hote
-    expr: "node_load1"
-    obligatoire: true
-
+  # D45 : le serveur personnel heberge une vingtaine de conteneurs sans rapport
+  # avec le memoire (constat du 14/11/2026, `docker ps` sur `sidy-dev`). Les trois
+  # metriques hote (node_exporter, sans filtre par conteneur) agregeraient leur
+  # activite avec celle de l'appli de test : un deploiement chez l'un d'eux
+  # deviendrait une derive non etiquetee dans le flux mesure. Elles sont donc
+  # retirees de la liste qui devient features ; `disque_libre_pct` reste pour la
+  # surveillance de la session (non obligatoire, non une feature de derive au
+  # sens ou son niveau ne bouge pas a chaque deploiement voisin).
   - nom: disque_libre_pct
     expr: '100 * node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}'
     obligatoire: false
 
+  # Trafic de l'appli de test seule, par conteneur (cAdvisor), et non du reseau
+  # hote (node_exporter) : chaque conteneur Docker a sa propre paire veth, donc
+  # ce trafic est deja isole des vingt autres conteneurs du serveur, pour la
+  # meme raison que cpu_appli / memoire_appli plus bas.
   - nom: reseau_entrant
-    expr: 'sum(rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br-.*"}[RATE]))'
+    expr: 'sum(rate(container_network_receive_bytes_total{name="memoire-app"}[RATE]))'
     obligatoire: true
 
   - nom: reseau_sortant
-    expr: 'sum(rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br-.*"}[RATE]))'
+    expr: 'sum(rate(container_network_transmit_bytes_total{name="memoire-app"}[RATE]))'
     obligatoire: true
 
   # Trafic de l'appli de test. Le plan de controle est exclu partout, comme sur

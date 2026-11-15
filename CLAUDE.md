@@ -294,3 +294,101 @@ Chaque jalon produit quelque chose d'utilisable dans le mémoire. **Les résulta
 6. **Problèmes rencontrés** et contournements → limites (6.3.3 et 7.3).
 
 Rien n'est écrit dans le mémoire sans chiffre ou fichier source correspondant.
+
+---
+
+## 12. Repères d'outillage pour Claude Code
+
+Section technique (commandes, architecture du code), distincte du cadrage de recherche ci-dessus.
+Le détail de chaque commande du CLI est dans `README.md` ; ce qui suit est ce qui ne se découvre
+pas en lisant un seul fichier.
+
+### Commandes courantes
+
+```bash
+uv sync                 # installe les dépendances (Python 3.11 épinglé par .python-version)
+uv run mdrift --help    # CLI, point d'entrée unique de toutes les expériences
+
+make lint                # ruff check . && ruff format --check .
+make test                # pytest (tests/, voir pyproject.toml : pythonpath = ["."])
+make build                # wheel installé dans un venv neuf hors dépôt, mdrift --help + import src/infra vérifiés
+
+uv run pytest tests/test_drift.py                       # un seul fichier
+uv run pytest tests/test_drift.py::test_nom_du_cas -v    # un seul test
+```
+
+Les trois cibles `lint` / `test` / `build` du Makefile sont la **seule** définition de ce qui est
+vérifié : `.gitlab-ci.yml` (le livrable du jalon M7) et `.github/workflows/ci.yml` (ce qui tourne
+réellement, le dépôt étant hébergé sur GitHub) appellent toutes les deux exactement ces cibles, et
+`tests/test_ci.py` vérifie qu'elles ne divergent pas. Le seul test qui exige le SMD téléchargé se
+déclare `skipped` en CI ; la campagne complète (`mdrift campaign`) n'y tourne jamais (plusieurs
+heures).
+
+### Convention de configuration
+
+Aucune valeur en dur dans le code : tout paramètre vient d'un YAML de `configs/` et est recopié à
+côté des résultats de chaque exécution. `src/config.py::load_config` résout un chemin relatif
+d'abord depuis `configs/`, puis depuis la racine du dépôt — donc `load_config("drift.yaml")` et
+`load_config("datasets/smd_dev.yaml")` fonctionnent tous les deux sans que l'appelant connaisse le
+sous-dossier.
+
+### Le même code sert au rejeu (offline) et à la boucle en ligne (démonstration)
+
+`src/evaluation/replay.py` (harnais prequentiel, chapitre 6) et `src/serving/loop.py` (boucle en
+ligne branchée sur Prometheus, chapitre 5) exécutent le **même** cycle de réentraînement :
+
+```
+decision = strategy.on_window(ctx)        # faut-il réentraîner ?
+plan     = strategy.propose(history, i)    # quelles données, quelle fenêtre V réservée
+challenger.fit(plan.train_X)               # le HARNAIS entraîne, jamais la stratégie
+stats    = mesures sans étiquette sur V    # le HARNAIS mesure
+verdict  = strategy.validate(stats)        # mise en service ou rejet
+si promu : champion = challenger, puis strategy.on_fit(plan.train_X, i)
+```
+
+Ces quatre lignes centrales sont factorisées dans `src/strategies/retraining.py` précisément pour
+garantir que la démonstration (chapitre 5) montre la même logique que celle évaluée (chapitre 6).
+Une stratégie (`src/strategies/base.py::Strategy`) ne voit **jamais** d'étiquette : `WindowContext`
+et `ValidationStats` n'ont aucun champ par lequel une étiquette pourrait transiter — c'est un
+invariant structurel, pas une discipline de code à vérifier à la main. `src/strategies/factory.py`
+construit une stratégie depuis son YAML et convertit les durées en minutes des configs en nombre de
+fenêtres (`minutes_to_windows`), seul endroit où cette conversion existe.
+
+### Surveillance de dérive
+
+`src/drift/monitor.py` combine un signal principal (part des features dont la statistique KS/PSI
+dépasse un seuil — `src/drift/aggregate.py`) et un signal secondaire (ADWIN sur le taux d'alertes —
+`src/drift/adwin.py`), puis exige une persistance de K fenêtres consécutives
+(`src/drift/confirmation.py`) avant de confirmer une dérive. Le mode de combinaison
+(`features` / `features_and_alerts` / `features_or_alerts`) est un paramètre de
+`configs/drift.yaml`, pas un choix figé dans le code.
+
+### Deux périmètres SMD disjoints
+
+`datasets/smd/loader.py` charge les machines décrites par un YAML de `configs/datasets/`.
+`smd_dev.yaml` (16 machines) sert à régler tous les paramètres ; `smd_eval.yaml` (12 machines) ne
+doit jamais être regardé — ni ses étiquettes ni ses résultats — avant que les paramètres soient
+figés. Toute commande de calibrage (`smd-screening`, `calibration`, `calibration-k`,
+`calibrate-drift`) écrit dans son propre fichier, jamais dans `results/summary.csv`, pour qu'une
+exécution de mise au point ne puisse pas contaminer la synthèse citée au mémoire.
+
+### Démonstration en ligne (serveur, jalons M4–M5)
+
+`infra/app/` est l'application de test FastAPI ; `infra/injector/` injecte les pannes dans des
+conteneurs dédiés, marqués à la fois par un label Docker (`memoire.injection=1`) et un préfixe de
+nom (`memoire-chaos-`) — les deux marques sont redondantes par construction, pour que
+`make stop-chaos-force` (l'arrêt d'urgence du §4.3, qui ne passe pas par Python) ne puisse jamais
+cibler un conteneur de production même tapé dans l'urgence. Les tableaux de bord Grafana
+(`infra/grafana/build_dashboard.py`) ne se modifient jamais à la main : un test vérifie que le JSON
+commité est bien la sortie du générateur. `src/tracking/registry.py` encapsule MLflow (alias
+`champion` dans le registry) ; `src/serving/loop.py` est la boucle qui lit Prometheus, score,
+surveille la dérive, réentraîne, valide, promeut et notifie Telegram (`src/notify/telegram.py`,
+regroupé pour éviter le spam).
+
+### Résultats
+
+Chaque exécution écrit dans `results/runs/<source>/<machine>/<scenario>/<stratégie>/<seed>/`
+(config complète, métriques, journal d'événements JSON lignes, traces) et met à jour sa ligne dans
+`results/summary.csv`. Le `run_id` est stable : rejouer la même expérience met à jour sa ligne au
+lieu de la dupliquer — utile pour reprendre une `campaign` interrompue sans relire tout ce qui a
+déjà tourné.
