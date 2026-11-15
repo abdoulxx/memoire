@@ -45,7 +45,7 @@ prometheus:
 # perdrait doit s'arreter net.
 metriques:
   # D45 : le serveur personnel heberge une vingtaine de conteneurs sans rapport
-  # avec le memoire (constat du 14/11/2026, `docker ps` sur `sidy-dev`). Les trois
+  # avec le memoire (constat du 14/11/2026, `docker ps` sur le serveur d'experimentation). Les trois
   # metriques hote (node_exporter, sans filtre par conteneur) agregeraient leur
   # activite avec celle de l'appli de test : un deploiement chez l'un d'eux
   # deviendrait une derive non etiquetee dans le flux mesure. Elles sont donc

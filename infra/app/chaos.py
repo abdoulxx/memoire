@@ -5,7 +5,7 @@ la latence ajoutee, la rafale d'erreurs 5xx, et depuis D46, le pic CPU et la
 fuite memoire. Les deux dernieres etaient a l'origine confiees a `stress-ng`
 dans un conteneur dedie (injecteur de la phase C), mais cAdvisor ne parvient pas
 a identifier les conteneurs sur le magasin d'images par containerd-snapshotter
-de Docker Engine 29 (constat du 15/11/2026 sur `sidy-dev`) : `cpu_appli` et
+de Docker Engine 29 (constat du 15/11/2026 sur le serveur d'experimentation) : `cpu_appli` et
 `memoire_appli` resteraient vides quelle que soit l'origine du conteneur. Les
 porter dans l'application permet de les mesurer via le collecteur de processus
 de `prometheus_client` (`infra/app/metrics.py`), independant de Docker. Seule la
