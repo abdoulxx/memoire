@@ -18,14 +18,22 @@ choix :
 - **`app_build_info` et `app_base_latency_ms`.** Une derive reelle S1 est un
   deploiement ; sans ces deux series, rien dans les donnees ne dit *quand* la
   version a change, et l'instant de derive devrait etre note a la main.
+- **`ProcessCollector`** (`process_cpu_seconds_total`, `process_resident_memory_bytes`).
+  Depuis D46, c'est la source de `cpu_appli` et `memoire_appli` dans
+  `configs/datasets/serveur.yaml` : cAdvisor ne voit aucun conteneur sur cet
+  hote (Docker Engine 29, magasin d'images par containerd-snapshotter), donc ces
+  deux metriques doivent venir du processus lui-meme, pas du conteneur qui le
+  porte. Un seul worker uvicorn : le processus mesure est bien celui de l'appli.
 
-Les metriques d'infrastructure (CPU, RAM, disque, reseau, conteneurs) ne sont pas
-ici : elles viennent de node_exporter et de cAdvisor (phase B).
+Les metriques d'infrastructure qui restent hors de l'application (disque, reseau,
+autres conteneurs) viennent de node_exporter et de cAdvisor (phase B) ; elles
+sont marquees non obligatoires pour une session serveur depuis D46, pour la
+meme raison que ci-dessus.
 """
 
 from __future__ import annotations
 
-from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, ProcessCollector
 
 from infra.app.chaos import TYPES
 
@@ -60,6 +68,13 @@ class Metriques:
     def __init__(self, registre: CollectorRegistry | None = None) -> None:
         self.registre = registre if registre is not None else CollectorRegistry()
 
+        # D46 : process_cpu_seconds_total et process_resident_memory_bytes,
+        # scopes au seul processus uvicorn de l'appli — c'est ce qui remplace
+        # cAdvisor pour cpu_appli/memoire_appli sur cet hote. Un registre neuf
+        # n'a pas de collecteur de processus par defaut, contrairement au
+        # registre global de `prometheus_client` : il faut l'ajouter ici.
+        ProcessCollector(registry=self.registre)
+
         self.requetes = Counter(
             "app_requests_total",
             "Requetes servies, par endpoint et par code de statut.",
@@ -86,7 +101,8 @@ class Metriques:
         )
         self.chaos_intensite = Gauge(
             "app_chaos_intensity",
-            "Intensite de l'injection en cours : millisecondes ajoutees, ou part de 5xx.",
+            "Intensite de l'injection en cours : millisecondes, part de 5xx, "
+            "nombre de fils d'execution ou Mio alloues, selon le type.",
             ["type"],
             registry=self.registre,
         )
@@ -117,8 +133,13 @@ class Metriques:
         self.requetes.labels(endpoint=endpoint, method=methode, status=str(statut)).inc()
         self.duree.labels(endpoint=endpoint).observe(duree_s)
 
-    def refleter_chaos(self, latence_ms: float, taux_erreurs: float) -> None:
-        self.chaos_actif.labels(type="latence").set(1 if latence_ms > 0 else 0)
-        self.chaos_intensite.labels(type="latence").set(latence_ms)
-        self.chaos_actif.labels(type="erreurs_5xx").set(1 if taux_erreurs > 0 else 0)
-        self.chaos_intensite.labels(type="erreurs_5xx").set(taux_erreurs)
+    def refleter_chaos(self, intensites: dict[str, float]) -> None:
+        """Met a jour les jauges d'injection pour les types donnes.
+
+        Generique sur le type, pour que l'ajout du pic CPU et de la fuite
+        memoire (D46) n'ait rien demande ici : seul `main.py` sait, pour chaque
+        type, comment lire l'intensite courante auprès de `Chaos`.
+        """
+        for type_, valeur in intensites.items():
+            self.chaos_actif.labels(type=type_).set(1 if valeur > 0 else 0)
+            self.chaos_intensite.labels(type=type_).set(valeur)

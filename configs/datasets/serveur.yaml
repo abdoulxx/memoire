@@ -56,17 +56,19 @@ metriques:
     expr: '100 * node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}'
     obligatoire: false
 
-  # Trafic de l'appli de test seule, par conteneur (cAdvisor), et non du reseau
-  # hote (node_exporter) : chaque conteneur Docker a sa propre paire veth, donc
-  # ce trafic est deja isole des vingt autres conteneurs du serveur, pour la
-  # meme raison que cpu_appli / memoire_appli plus bas.
+  # Trafic de l'appli de test seule, par conteneur (cAdvisor). D46 : cAdvisor ne
+  # voit aucun conteneur sur l'hote de demonstration (Docker Engine 29, magasin
+  # d'images par containerd-snapshotter), donc ces deux colonnes restent
+  # vides en pratique. Non obligatoires : la saturation reste visible par
+  # requetes_par_s, la latence et les requetes en vol (§4.2), donc une session
+  # sans cAdvisor reste utilisable.
   - nom: reseau_entrant
     expr: 'sum(rate(container_network_receive_bytes_total{name="memoire-app"}[RATE]))'
-    obligatoire: true
+    obligatoire: false
 
   - nom: reseau_sortant
     expr: 'sum(rate(container_network_transmit_bytes_total{name="memoire-app"}[RATE]))'
-    obligatoire: true
+    obligatoire: false
 
   # Trafic de l'appli de test. Le plan de controle est exclu partout, comme sur
   # le tableau de bord : il ne subit pas les injections, et le compter
@@ -93,12 +95,18 @@ metriques:
     expr: "sum(app_in_flight_requests) or vector(0)"
     obligatoire: true
 
+  # D46 : issues du collecteur de processus de l'appli (`infra/app/metrics.py`,
+  # `ProcessCollector`), pas de cAdvisor. Memes noms de colonne qu'avant, pour
+  # que le reste du pipeline (features, comparaison au SMD) n'ait rien a savoir
+  # du changement de source. `job="app"` est le nom du scrape job dans
+  # `infra/prometheus/prometheus.yml` ; un seul worker uvicorn, donc une seule
+  # serie par expression.
   - nom: cpu_appli
-    expr: 'sum(rate(container_cpu_usage_seconds_total{name="memoire-app"}[RATE]))'
+    expr: 'sum(rate(process_cpu_seconds_total{job="app"}[RATE]))'
     obligatoire: true
 
   - nom: memoire_appli
-    expr: 'sum(container_memory_working_set_bytes{name="memoire-app"})'
+    expr: 'sum(process_resident_memory_bytes{job="app"})'
     obligatoire: true
 
   # Vue agregee des conteneurs d'injection. Elle ne sert pas de feature pour le

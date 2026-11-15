@@ -40,7 +40,14 @@ def _application(
     latence_base_ms: float = 1.0,
 ) -> tuple[TestClient, Chaos, Metriques]:
     horloge = horloge or HorlogePilotee()
-    chaos = Chaos(horloge=horloge)
+    # Sans ces remplacements, un test de pic CPU brulerait un vrai cœur et un
+    # test de fuite memoire allouerait de la vraie memoire (D46) : le travail de
+    # fond est injectable precisement pour que les tests restent instantanes.
+    chaos = Chaos(
+        horloge=horloge,
+        demarrer_cpu=lambda threads, duree_s, actif: None,
+        demarrer_memoire=lambda mo, duree_s, actif: None,
+    )
     metriques = Metriques()
     reglages = Reglages(
         version="1.0.0",
@@ -221,3 +228,83 @@ def test_un_taux_d_erreurs_hors_borne_est_refuse():
     client, _, _ = _application()
     assert client.post("/chaos/errors", json={"taux": 1.5, "duree_s": 10}).status_code == 422
     assert client.post("/chaos/errors", json={"taux": -0.1, "duree_s": 10}).status_code == 422
+
+
+# --- Pic CPU et fuite memoire, dans l'appli elle-meme (D46) -----------------
+
+
+def test_le_pic_cpu_demarre_le_travail_de_fond_et_s_etiquette():
+    """Le travail de fond reel est remplace par un test, mais l'etat et
+    l'intensite rapportes doivent etre ceux d'une injection normale."""
+    appels: list[tuple[float, float]] = []
+    horloge = HorlogePilotee()
+    chaos = Chaos(
+        horloge=horloge,
+        demarrer_cpu=lambda threads, duree_s, actif: appels.append((threads, duree_s)),
+    )
+    client = TestClient(
+        creer_application(
+            reglages=Reglages(
+                version="1.0.0", latence_base_ms=1.0, dispersion=0.0, chaos_autorise=True
+            ),
+            chaos=chaos,
+        )
+    )
+    reponse = client.post("/chaos/cpu", json={"threads": 2, "duree_s": 60})
+    assert reponse.status_code == 200
+    assert appels == [(2.0, 60.0)]
+    assert client.get("/chaos/state").json()["actives"][0]["type"] == "pic_cpu"
+    assert 'app_chaos_active{type="pic_cpu"} 1.0' in client.get("/metrics").text
+
+
+def test_un_pic_cpu_sans_fil_d_execution_est_refuse():
+    client, _, _ = _application()
+    assert client.post("/chaos/cpu", json={"threads": 0, "duree_s": 60}).status_code == 422
+
+
+def test_la_fuite_memoire_demarre_le_travail_de_fond_et_s_etiquette():
+    appels: list[tuple[float, float]] = []
+    chaos = Chaos(
+        horloge=HorlogePilotee(),
+        demarrer_memoire=lambda mo, duree_s, actif: appels.append((mo, duree_s)),
+    )
+    client = TestClient(
+        creer_application(
+            reglages=Reglages(
+                version="1.0.0", latence_base_ms=1.0, dispersion=0.0, chaos_autorise=True
+            ),
+            chaos=chaos,
+        )
+    )
+    reponse = client.post("/chaos/memory", json={"mo": 150, "duree_s": 60})
+    assert reponse.status_code == 200
+    assert appels == [(150.0, 60.0)]
+    assert 'app_chaos_intensity{type="fuite_memoire"} 150.0' in client.get("/metrics").text
+
+
+def test_une_fuite_memoire_au_dela_du_plafond_est_refusee():
+    """Le plafond (bien sous APP_MEMORY) est le garde-fou de D46 : jamais de
+    risque d'arret du conteneur par manque de memoire."""
+    client, _, _ = _application()
+    refus = client.post("/chaos/memory", json={"mo": 500, "duree_s": 60})
+    assert refus.status_code == 400
+    assert "plafond" in refus.json()["detail"]
+
+
+def test_l_arret_d_urgence_remet_aussi_le_cpu_et_la_memoire_a_zero():
+    appels: list[bool] = []
+    chaos = Chaos(
+        horloge=HorlogePilotee(),
+        demarrer_cpu=lambda threads, duree_s, actif: appels.append(actif()),
+    )
+    client = TestClient(
+        creer_application(
+            reglages=Reglages(
+                version="1.0.0", latence_base_ms=1.0, dispersion=0.0, chaos_autorise=True
+            ),
+            chaos=chaos,
+        )
+    )
+    client.post("/chaos/cpu", json={"threads": 1, "duree_s": 60}).raise_for_status()
+    client.post("/chaos/reset").raise_for_status()
+    assert 'app_chaos_active{type="pic_cpu"} 0.0' in client.get("/metrics").text

@@ -42,6 +42,21 @@ MOYENS = (MOYEN_CONTENEUR, MOYEN_APPLI, MOYEN_CHARGE)
 # Les types qui creent un conteneur doivent declarer des limites.
 MOYENS_CONTENEUR = (MOYEN_CONTENEUR, MOYEN_CHARGE)
 
+# Endpoint applicatif et cle du corps de requete, pour chaque type dont le
+# `moyen` est `appli`. D46 : pic_cpu et fuite_memoire s'y sont ajoutes, parce
+# que cAdvisor ne voit aucun conteneur sur l'hote de demonstration (Docker
+# Engine 29, magasin d'images par containerd-snapshotter) et que le pic CPU et
+# la fuite memoire restent donc invisibles s'ils sont injectes dans un
+# conteneur a part. `configs/injection.yaml` garde `moyen: conteneur` comme
+# option pour un usage ponctuel, hors session enregistree (stress-ng reste
+# dans `_injecter_par_conteneur` / `_commande_stress`, inchange).
+ENDPOINTS_APPLI: dict[str, tuple[str, str]] = {
+    "latence": ("/chaos/latency", "supplement_ms"),
+    "erreurs": ("/chaos/errors", "taux"),
+    "pic_cpu": ("/chaos/cpu", "threads"),
+    "fuite_memoire": ("/chaos/memory", "mo"),
+}
+
 
 class RefusDeSecurite(RuntimeError):
     """L'injecteur a refuse d'agir. Jamais rattrapee en silence : c'est le garde-fou."""
@@ -439,8 +454,12 @@ class Injecteur:
                 f"Le type `{reglage.nom}` passe par le plan de controle de l'appli "
                 "de test, qui n'est pas joignable."
             )
-        chemin = "/chaos/latency" if reglage.nom == "latence" else "/chaos/errors"
-        cle = "supplement_ms" if reglage.nom == "latence" else "taux"
+        if reglage.nom not in ENDPOINTS_APPLI:
+            raise RefusDeSecurite(
+                f"Type `{reglage.nom}` declare `moyen: appli` mais aucun endpoint "
+                "applicatif ne lui correspond (ENDPOINTS_APPLI)."
+            )
+        chemin, cle = ENDPOINTS_APPLI[reglage.nom]
         debut = self.horloge()
         self.appli.injecter(chemin, {cle: intensite, "duree_s": duree_s})
         fin = self._subir(duree_s, self._reinitialiser_silencieux)

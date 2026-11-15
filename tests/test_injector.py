@@ -27,8 +27,22 @@ def _config() -> dict[str, Any]:
     return load_config(CONFIG_REELLE)
 
 
-def _reglages(dossier: Path | None = None) -> Reglages:
-    reglages = Reglages.depuis_config(_config(), PROJECT_ROOT)
+def _config_moyen_conteneur(*noms: str) -> dict[str, Any]:
+    """Force `moyen: conteneur` pour les types donnes.
+
+    Depuis D46, pic_cpu et fuite_memoire passent par le plan de controle de
+    l'appli par defaut ; `stress-ng` ne reste qu'une option, hors session
+    enregistree (configs/injection.yaml). Ces tests verifient que cette option
+    fonctionne toujours, sans en faire le comportement par defaut.
+    """
+    config = _config()
+    for nom in noms:
+        config["types"][nom]["moyen"] = "conteneur"
+    return config
+
+
+def _reglages(dossier: Path | None = None, config: dict[str, Any] | None = None) -> Reglages:
+    reglages = Reglages.depuis_config(config if config is not None else _config(), PROJECT_ROOT)
     if dossier is not None:
         reglages = Reglages(**{**reglages.__dict__, "dossier_etiquettes": dossier})
     return reglages
@@ -54,9 +68,10 @@ def _injecteur(
     docker: DockerEnregistre | None = None,
     appli: ApplieFactice | None = None,
     dossier: Path | None = None,
+    config: dict[str, Any] | None = None,
 ) -> Injecteur:
     return Injecteur(
-        reglages=_reglages(dossier),
+        reglages=_reglages(dossier, config),
         docker=docker or DockerEnregistre(),
         appli=appli,
         horloge=lambda: 1_793_000_000.0,
@@ -91,8 +106,21 @@ def test_tout_type_qui_cree_un_conteneur_declare_ses_limites() -> None:
 
 
 def test_un_type_sans_limites_est_refuse_a_la_lecture() -> None:
-    """Le garde-fou est a la lecture de la configuration, pas au lancement."""
+    """Le garde-fou est a la lecture de la configuration, pas au lancement.
+
+    `saturation` (moyen `charge`) et non `pic_cpu` : depuis D46, pic_cpu passe
+    par defaut par le plan de controle de l'appli et n'exige donc plus de
+    limites de conteneur (voir test_un_type_conteneur_sans_limites_est_refuse).
+    """
     config = _config()
+    del config["types"]["saturation"]["limites"]
+    with pytest.raises(ValueError, match="limites"):
+        Reglages.depuis_config(config, PROJECT_ROOT)
+
+
+def test_un_type_conteneur_sans_limites_est_refuse() -> None:
+    """Le garde-fou s'applique aussi a l'option conteneur de pic_cpu (D46)."""
+    config = _config_moyen_conteneur("pic_cpu")
     del config["types"]["pic_cpu"]["limites"]
     with pytest.raises(ValueError, match="limites"):
         Reglages.depuis_config(config, PROJECT_ROOT)
@@ -121,9 +149,15 @@ def test_une_duree_au_dela_du_plafond_est_refusee() -> None:
 
 
 def test_le_conteneur_porte_son_propre_delai_d_expiration() -> None:
-    """Si l'injecteur meurt, `stress-ng --timeout` arrete le conteneur."""
+    """Si l'injecteur meurt, `stress-ng --timeout` arrete le conteneur.
+
+    Option conteneur de D46 : par defaut pic_cpu passe par le plan de controle
+    de l'appli (voir plus bas), mais `stress-ng` reste disponible et doit donc
+    rester couvert.
+    """
     docker = DockerEnregistre()
-    _injecteur(docker).injecter("pic_cpu", duree_s=120)
+    config = _config_moyen_conteneur("pic_cpu")
+    _injecteur(docker, config=config).injecter("pic_cpu", duree_s=120)
     lancement = _lancement(docker)
     assert lancement[lancement.index("--timeout") + 1] == "120s"
 
@@ -148,10 +182,17 @@ def test_un_type_inconnu_est_refuse() -> None:
 # --- Aucun conteneur sans limites, aucun privilege --------------------------
 
 
+# pic_cpu et fuite_memoire sont bascules en `moyen: conteneur` pour ces
+# verifications : depuis D46 ils passent par defaut par le plan de controle de
+# l'appli (voir plus bas), mais l'option `stress-ng` reste disponible et doit
+# donc rester couverte par les memes garde-fous que `saturation`.
+_CONFIG_OPTION_CONTENEUR = _config_moyen_conteneur("pic_cpu", "fuite_memoire")
+
+
 def test_tout_conteneur_lance_porte_ses_limites() -> None:
     for type_ in ("pic_cpu", "fuite_memoire", "saturation"):
         docker = DockerEnregistre()
-        _injecteur(docker).injecter(type_, duree_s=30)
+        _injecteur(docker, config=_CONFIG_OPTION_CONTENEUR).injecter(type_, duree_s=30)
         lancement = _lancement(docker)
         assert "--cpus" in lancement, type_
         assert "--memory" in lancement, type_
@@ -172,14 +213,14 @@ def test_aucun_conteneur_d_injection_n_obtient_de_privilege() -> None:
     }
     for type_ in ("pic_cpu", "fuite_memoire", "saturation"):
         docker = DockerEnregistre()
-        _injecteur(docker).injecter(type_, duree_s=30)
+        _injecteur(docker, config=_CONFIG_OPTION_CONTENEUR).injecter(type_, duree_s=30)
         assert not interdits & set(_lancement(docker)), type_
 
 
 def test_le_stress_tourne_sans_reseau_et_sans_montage() -> None:
     for type_ in ("pic_cpu", "fuite_memoire"):
         docker = DockerEnregistre()
-        _injecteur(docker).injecter(type_, duree_s=30)
+        _injecteur(docker, config=_CONFIG_OPTION_CONTENEUR).injecter(type_, duree_s=30)
         lancement = _lancement(docker)
         assert lancement[lancement.index("--network") + 1] == "none", type_
         assert "--volume" not in lancement, type_
@@ -200,7 +241,7 @@ def test_le_seul_montage_de_l_injecteur_est_le_scenario_de_charge() -> None:
 def test_tout_conteneur_cree_porte_les_deux_marques() -> None:
     docker = DockerEnregistre()
     injecteur = _injecteur(docker)
-    injecteur.injecter("pic_cpu", duree_s=30)
+    injecteur.injecter("saturation", duree_s=30)
     lancement = _lancement(docker)
     nom = lancement[lancement.index("--name") + 1]
     assert nom.startswith(f"{injecteur.reglages.prefixe}-")
@@ -311,7 +352,7 @@ def test_sans_appli_joignable_l_injection_applicative_est_refusee() -> None:
 
 
 def test_l_anomalie_est_etiquetee_avec_ce_qui_a_ete_subi(tmp_path: Path) -> None:
-    injecteur = _injecteur(dossier=tmp_path)
+    injecteur = _injecteur(appli=ApplieFactice(), dossier=tmp_path)
     anomalie = injecteur.injecter("pic_cpu", intensite=2, duree_s=180, run_id="s1")
     lignes = lire_anomalies(tmp_path, "s1")
     assert len(lignes) == 1
@@ -323,13 +364,18 @@ def test_l_anomalie_est_etiquetee_avec_ce_qui_a_ete_subi(tmp_path: Path) -> None
 
 
 def test_sans_run_id_rien_n_est_etiquete(tmp_path: Path) -> None:
-    _injecteur(dossier=tmp_path).injecter("pic_cpu", duree_s=30)
+    _injecteur(appli=ApplieFactice(), dossier=tmp_path).injecter("pic_cpu", duree_s=30)
     assert not list(tmp_path.glob("*.csv"))
 
 
 def test_une_interruption_etiquette_la_duree_atteinte(tmp_path: Path) -> None:
-    """Ctrl+C doit produire une etiquette plus courte, jamais une etiquette fausse."""
-    instants = iter([1_793_000_000.0, 1_793_000_000.0, 1_793_000_042.0])
+    """Ctrl+C doit produire une etiquette plus courte, jamais une etiquette fausse.
+
+    Deux instants, pas trois : a la difference du chemin conteneur, le chemin
+    applicatif (D46) ne nomme pas de conteneur et ne consomme donc pas d'appel
+    d'horloge supplementaire avant `debut_ts`.
+    """
+    instants = iter([1_793_000_000.0, 1_793_000_042.0])
 
     def interrompre(_: float) -> None:
         raise KeyboardInterrupt
@@ -337,6 +383,7 @@ def test_une_interruption_etiquette_la_duree_atteinte(tmp_path: Path) -> None:
     injecteur = Injecteur(
         reglages=_reglages(tmp_path),
         docker=DockerEnregistre(),
+        appli=ApplieFactice(),
         horloge=lambda: next(instants),
         attente=interrompre,
         racine=PROJECT_ROOT,
@@ -371,10 +418,13 @@ def test_un_conteneur_tue_en_cours_route_etiquette_la_duree_subie(tmp_path: Path
     que la charge s'etait arretee au bout de 90 s. L'etiquette aurait annonce deux
     minutes d'anomalie sur des metriques redevenues normales.
     """
+    # Option conteneur de D46 (voir _CONFIG_OPTION_CONTENEUR) : cette panne est
+    # specifique au cycle de vie d'un conteneur, qui n'est plus le chemin par
+    # defaut de pic_cpu.
     instants = iter([1_793_000_000.0, 1_793_000_000.0, 1_793_000_030.0])
     docker = DockerQuiTue()
     injecteur = Injecteur(
-        reglages=_reglages(tmp_path),
+        reglages=_reglages(tmp_path, config=_CONFIG_OPTION_CONTENEUR),
         docker=docker,
         horloge=lambda: next(instants),
         attente=lambda _: None,
@@ -389,7 +439,7 @@ def test_la_surveillance_sonde_le_conteneur_sans_attendre_l_echeance(tmp_path: P
     """La surveillance doit sonder plusieurs fois, sinon elle ne detecte rien."""
     docker = DockerEnregistre()
     injecteur = Injecteur(
-        reglages=_reglages(tmp_path),
+        reglages=_reglages(tmp_path, config=_CONFIG_OPTION_CONTENEUR),
         docker=docker,
         horloge=lambda: 1_793_000_000.0,
         attente=lambda _: None,
@@ -487,7 +537,9 @@ class DockerQuiEchoue(DockerEnregistre):
 
 
 def test_un_conteneur_qui_s_arrete_aussitot_est_signale(tmp_path: Path) -> None:
-    injecteur = _injecteur(DockerQuiEchoue(), dossier=tmp_path)
+    # Option conteneur (D46) : ce defaut de demarrage n'existe que pour
+    # `stress-ng` dans un conteneur, plus le chemin par defaut de pic_cpu.
+    injecteur = _injecteur(DockerQuiEchoue(), dossier=tmp_path, config=_CONFIG_OPTION_CONTENEUR)
     with pytest.raises(ErreurDocker, match="arrete aussitot"):
         injecteur.injecter("pic_cpu", duree_s=30, run_id="s4")
     # Le point du test : aucune etiquette pour une anomalie qui n'a pas eu lieu.
@@ -496,7 +548,7 @@ def test_un_conteneur_qui_s_arrete_aussitot_est_signale(tmp_path: Path) -> None:
 
 def test_le_journal_du_conteneur_mort_ne_est_rapporte(tmp_path: Path) -> None:
     """Sans le journal, un echec d'injection est indiagnostiquable."""
-    injecteur = _injecteur(DockerQuiEchoue(), dossier=tmp_path)
+    injecteur = _injecteur(DockerQuiEchoue(), dossier=tmp_path, config=_CONFIG_OPTION_CONTENEUR)
     with pytest.raises(ErreurDocker, match="temp-path"):
         injecteur.injecter("fuite_memoire", duree_s=30)
 
@@ -504,7 +556,7 @@ def test_le_journal_du_conteneur_mort_ne_est_rapporte(tmp_path: Path) -> None:
 def test_le_systeme_de_fichiers_du_stress_est_en_lecture_seule() -> None:
     """Avec un seul espace inscriptible, borne : stress-ng en a besoin."""
     docker = DockerEnregistre()
-    _injecteur(docker).injecter("pic_cpu", duree_s=30)
+    _injecteur(docker, config=_CONFIG_OPTION_CONTENEUR).injecter("pic_cpu", duree_s=30)
     lancement = _lancement(docker)
     assert "--read-only" in lancement
     assert lancement[lancement.index("--tmpfs") + 1] == "/tmp:size=64m,mode=1777"

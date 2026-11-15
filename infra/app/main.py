@@ -30,7 +30,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 
-from infra.app.chaos import Chaos
+from infra.app.chaos import TYPES, Chaos
 from infra.app.metrics import Metriques
 from infra.app.settings import Reglages
 
@@ -45,6 +45,16 @@ class DemandeLatence(BaseModel):
 
 class DemandeErreurs(BaseModel):
     taux: float = Field(..., ge=0, le=1, description="Part des reponses transformees en 5xx.")
+    duree_s: float = Field(..., gt=0, description="Duree de l'injection, en secondes.")
+
+
+class DemandeCpu(BaseModel):
+    threads: float = Field(..., gt=0, description="Fils d'execution charges a 100 %.")
+    duree_s: float = Field(..., gt=0, description="Duree de l'injection, en secondes.")
+
+
+class DemandeMemoire(BaseModel):
+    mo: float = Field(..., gt=0, description="Memoire allouee progressivement, en Mio.")
     duree_s: float = Field(..., gt=0, description="Duree de l'injection, en secondes.")
 
 
@@ -92,7 +102,7 @@ def creer_application(
         try:
             supplement_ms = chaos.latence_ajoutee_ms()
             taux = chaos.taux_erreurs()
-            metriques.refleter_chaos(supplement_ms, taux)
+            metriques.refleter_chaos({type_: chaos.intensite_active(type_) for type_ in TYPES})
 
             if supplement_ms > 0:
                 await asyncio.sleep(supplement_ms / 1000.0)
@@ -128,7 +138,7 @@ def creer_application(
 
     @application.get("/metrics")
     async def exposer_metriques() -> Response:
-        metriques.refleter_chaos(chaos.latence_ajoutee_ms(), chaos.taux_erreurs())
+        metriques.refleter_chaos({type_: chaos.intensite_active(type_) for type_ in TYPES})
         return Response(generate_latest(metriques.registre), media_type=CONTENT_TYPE_LATEST)
 
     @application.get("/work")
@@ -163,10 +173,28 @@ def creer_application(
             raise HTTPException(status_code=400, detail=str(erreur)) from erreur
         return _vue(injection)
 
+    @application.post("/chaos/cpu")
+    async def injecter_cpu(demande: DemandeCpu) -> dict[str, object]:
+        _verifier_autorisation(reglages)
+        try:
+            injection = chaos.injecter_cpu(demande.threads, demande.duree_s)
+        except ValueError as erreur:
+            raise HTTPException(status_code=400, detail=str(erreur)) from erreur
+        return _vue(injection)
+
+    @application.post("/chaos/memory")
+    async def injecter_memoire(demande: DemandeMemoire) -> dict[str, object]:
+        _verifier_autorisation(reglages)
+        try:
+            injection = chaos.injecter_memoire(demande.mo, demande.duree_s)
+        except ValueError as erreur:
+            raise HTTPException(status_code=400, detail=str(erreur)) from erreur
+        return _vue(injection)
+
     @application.post("/chaos/reset")
     async def arreter_injections() -> dict[str, int]:
         arretees = chaos.reinitialiser()
-        metriques.refleter_chaos(0.0, 0.0)
+        metriques.refleter_chaos({type_: 0.0 for type_ in TYPES})
         return {"arretees": arretees}
 
     @application.get("/chaos/state")

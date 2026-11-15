@@ -47,23 +47,38 @@ appli:
   url: http://127.0.0.1:8000
 
 # Les cinq types d'anomalie du §4.2 du cadrage. `limites` est obligatoire pour
-# tout type qui cree un conteneur.
+# tout type qui cree un conteneur (moyen `conteneur` ou `charge`).
+#
+# D46 : pic_cpu et fuite_memoire passent par `moyen: appli` (plan de controle
+# de l'appli de test, comme latence/erreurs) et non plus par un conteneur
+# stress-ng dedie. Raison : cAdvisor ne voit aucun conteneur sur l'hote de
+# demonstration (Docker Engine 29, magasin d'images par containerd-snapshotter),
+# donc un conteneur stress-ng serait invisible dans cpu_appli/memoire_appli
+# tout en restant etiquete comme anomalie — faisant baisser le rappel par
+# evenement de toutes les strategies (le piege de D38). Le travail de fond
+# tourne alors dans le processus uvicorn lui-meme et devient mesurable via le
+# collecteur de processus (`infra/app/metrics.py`, D46).
+#
+# `limites` et `image_stress` restent ici pour l'usage ponctuel en option,
+# hors session enregistree : remettre `moyen: conteneur` relance stress-ng
+# (`_injecter_par_conteneur` / `_commande_stress`, inchange).
 types:
   pic_cpu:
-    moyen: conteneur
-    intensite_defaut: 2        # nombre de travailleurs stress-ng
+    moyen: appli
+    intensite_defaut: 2        # fils d'execution charges a 100 % (ou travailleurs stress-ng en option conteneur)
     duree_defaut_s: 180        # 1 a 5 min (§4.2)
     limites:
       cpus: 1.0                # jamais plus d'un cœur : le bruit de fond reste lisible
       memoire: 256m
 
   fuite_memoire:
-    moyen: conteneur
-    intensite_defaut: 192      # Mio reclames par le travailleur
+    moyen: appli
+    intensite_defaut: 192      # Mio alloues progressivement dans l'appli (ou reclames par stress-ng en option conteneur), sous le plafond de 200 Mio (infra/app/chaos.py)
     duree_defaut_s: 240
     limites:
       # La limite doit etre SUPERIEURE a l'intensite, sinon le noyau tue le
-      # processus des la premiere seconde et l'anomalie ne dure pas.
+      # processus des la premiere seconde et l'anomalie ne dure pas. Ne sert
+      # qu'a l'option conteneur ci-dessus.
       cpus: 0.5
       memoire: 256m
 
