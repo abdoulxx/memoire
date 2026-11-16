@@ -127,10 +127,21 @@ def _combler(
     parts: dict[str, float] = {}
     comblees: dict[str, np.ndarray] = {}
 
-    for nom in reglages.noms:
+    for metrique in reglages.metriques:
+        nom = metrique.nom
         serie = colonnes[nom].astype(float)
         manquants = serie.isna()
         parts[nom] = float(manquants.mean())
+
+        if not metrique.obligatoire and parts[nom] >= 1.0:
+            # Une metrique facultative entierement absente (ex. reseau_entrant
+            # / reseau_sortant sans cAdvisor, D46) n'a aucun point d'ancrage :
+            # l'interpoler produirait toujours du NaN, et le refus de la
+            # session sur un trou qu'elle ne peut par construction jamais
+            # combler annulerait le but meme de `obligatoire: false`. Elle est
+            # mise a zero plutot qu'interpolee ou refusee.
+            comblees[nom] = np.zeros(len(serie), dtype=np.float64)
+            continue
 
         if manquants.any():
             # Longueur du plus long trou consecutif : c'est elle qui decide, pas

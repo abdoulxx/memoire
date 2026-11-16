@@ -75,6 +75,7 @@ def _ecrire_session(
     run_id: str,
     n: int = 20,
     cpu: np.ndarray | None = None,
+    latence: np.ndarray | None = None,
     instants: np.ndarray | None = None,
 ) -> np.ndarray:
     """Ecrit un Parquet de session, comme `session-record` le ferait."""
@@ -85,7 +86,7 @@ def _ecrire_session(
     tableau = {
         COLONNE_INSTANT: instants,
         "cpu": np.arange(n, dtype=float) if cpu is None else cpu,
-        "latence": np.full(n, 0.1),
+        "latence": np.full(n, 0.1) if latence is None else latence,
     }
     pd.DataFrame(tableau).to_parquet(chemin_donnees(reglages, run_id), index=False)
     return instants
@@ -350,6 +351,36 @@ def test_un_trou_long_fait_echouer_le_chargement(tmp_path: Path) -> None:
     cpu[10:16] = np.nan
     _ecrire_session(reglages, "s1", n=20, cpu=cpu)
     with pytest.raises(ErreurSession, match="6 points consecutifs"):
+        charger_session("s1", reglages)
+
+
+def test_une_metrique_facultative_entierement_absente_est_mise_a_zero(tmp_path: Path) -> None:
+    # D46 : reseau_entrant/reseau_sortant sont vides en permanence sans
+    # cAdvisor, et marques `obligatoire: false` precisement pour qu'une
+    # session reste utilisable sans eux. Sans ce cas particulier, le trou de
+    # 20 points consecutifs (toute la session) ferait echouer le chargement
+    # comme n'importe quel autre trou trop long, et `obligatoire: false`
+    # n'aurait plus d'effet.
+    reglages = _reglages(tmp_path)
+    _ecrire_session(reglages, "s1", n=20, latence=np.full(20, np.nan))
+
+    session = charger_session("s1", reglages)
+
+    colonne_latence = reglages.noms.index("latence")
+    assert not np.isnan(session.train).any()
+    assert not np.isnan(session.test).any()
+    assert (session.train[:, colonne_latence] == 0.0).all()
+    assert (session.test[:, colonne_latence] == 0.0).all()
+    assert session.parts_interpolees["latence"] == pytest.approx(1.0)
+
+
+def test_une_metrique_obligatoire_entierement_absente_fait_toujours_echouer(
+    tmp_path: Path,
+) -> None:
+    reglages = _reglages(tmp_path)
+    _ecrire_session(reglages, "s1", n=20, cpu=np.full(20, np.nan))
+
+    with pytest.raises(ErreurSession, match="20 points consecutifs"):
         charger_session("s1", reglages)
 
 
