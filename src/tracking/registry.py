@@ -196,6 +196,7 @@ class RegistreModeles:
 
     def _construire_client(self) -> Any:
         try:
+            import mlflow
             from mlflow.tracking import MlflowClient
         except ImportError as erreur:  # pragma: no cover - depend de l'installation
             raise ErreurRegistre(
@@ -208,6 +209,15 @@ class RegistreModeles:
         # l'exploitant ne les a pas deja fixees lui-meme.
         os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", str(int(self.reglages.timeout_s)))
         os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", str(self.reglages.max_retries))
+        # `MlflowClient(tracking_uri=...)` suffit pour lire et pour les appels
+        # qui portent un `run_id` explicite, mais pas pour televerser un
+        # artefact sur un serveur dont l'URI est du type `mlflow-artifacts:/...`
+        # (le cas du service `mlflow` du docker-compose) : la resolution de ce
+        # schema relatif passe par `mlflow.get_tracking_uri()`, l'etat global du
+        # module, pas par le parametre du client. Sans cet appel, `log_artifact`
+        # echoue en pointant vers le magasin de fichiers local par defaut
+        # (`file://.../mlruns`) au lieu du serveur configure.
+        mlflow.set_tracking_uri(self.reglages.tracking_uri)
         return MlflowClient(tracking_uri=self.reglages.tracking_uri)
 
     def _erreur(self, action: str, erreur: Exception) -> ErreurRegistre:
