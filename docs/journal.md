@@ -619,3 +619,54 @@ puis rejouer B0, B1, P et A1 sur ces sessions avec le harnais de M2 et les param
 M3. Livrable memoire : la validation sur infrastructure reelle du chapitre 6, a comparer aux resultats
 SMD. Rappel du §4.3 : injections uniquement dans les conteneurs dedies et limites, jamais sur une
 application en production, et aucune IP, nom d'hote ou domaine dans les resultats ni les captures.
+
+## 2026-11-15 / 2026-11-22 (en cours) — M6 : bilan factuel de la session d'enregistrement a ce jour
+
+Journal factuel, sans interpretation au-dela de ce que les fichiers permettent de dire. Le
+run d'enregistrement de session est `m6_session_01` ; T0 reel : **2026-11-15T02:14:32Z** ; fin
+prevue, inchangee : **2026-11-25T02:14:32Z** (environ 9 jours 24 h). Frontiere 40 % / 60 %
+train / evaluation : **2026-11-19T19:11:49Z**.
+
+**Anomalies injectees jusqu'ici** (`data/labels/m6_session_01.csv`) :
+
+| Type | Debut (UTC) | Fin (UTC) | Intensite |
+|---|---|---|---|
+| pic_cpu | 2026-11-20T23:40:12Z | 2026-11-20T23:43:12Z | 2 |
+| fuite_memoire | 2026-11-21T06:26:05Z | 2026-11-21T06:30:05Z | 192 |
+| latence | 2026-11-22T19:57:49Z | 2026-11-22T19:59:49Z | 200 ms |
+
+Restent a injecter avant le 24/11 au soir : `erreurs` (programmee ce soir, 21:57Z) et `saturation`
+(demain matin).
+
+**Derive reelle confirmee** (`data/labels/m6_session_01_drift.csv`) : **2026-11-21T12:11:56Z**,
+deploiement de `memoire-app` 1.0.0 → 1.1.0 (`APP_BASE_LATENCY_MS` 25 → 45, `APP_LATENCY_SPREAD`
+0,35 → 0,5). Une seule derive reelle a ce jour.
+
+**Ce que le service en ligne (`memoire-detection`, pile de demonstration du chapitre 5) a fait
+depuis le demarrage, avec les heures** :
+- **2026-11-16T06:36:20Z** : premier demarrage du service, apres le prefill initial.
+- **2026-11-16T06:36:20Z → 2026-11-22T21:15:02Z (six jours)** : **rien**. Defaut dans le
+  comblement des trous de la boucle en ligne (`_combler`, D47) : les deux colonnes facultatives
+  `reseau_entrant`/`reseau_sortant`, toujours vides sur cet hote (D46), faisaient refuser **chaque**
+  fenetre au lieu d'etre mises a zero comme le prevoyait deja D46 x D38 pour le chargeur de
+  sessions. Consequence : aucune fenetre scoree, aucune alerte, aucun signal ni confirmation de
+  derive, aucun reentrainement, aucune promotion ni rejet pendant toute cette periode — y compris
+  pendant les trois anomalies injectees ci-dessus et la derive reelle du 21/11. Le service n'a
+  donc techniquement rien vu de ce qui s'est passe sur cette fenetre de six jours ; les trois
+  anomalies et la derive restent neanmoins mesurables **hors ligne**, dans les metriques
+  Prometheus elles-memes, pour le rejeu M6 du chapitre 6, qui ne depend pas de ce service.
+- **2026-11-22T21:15:02Z** : correction deployee (D47) et service redemarre ; **21:15:20Z**,
+  premiere fenetre reellement scoree de toute la session (position 399, score 0,699 contre seuil
+  0,555 — alerte). Un second redemarrage a 21:20:05Z (ajout mediane/max du temps de traitement,
+  sans rapport avec D47) a repris le scoring normalement (`online_20261122T212005Z`).
+- **21:15Z → 21:24Z (cinq fenetres observees a ce jour)** : chaque fenetre alerte, score stable
+  entre 0,68 et 0,70. Aucun `drift_signal`, `drift_confirmed`, `retrain_start/end`, `promoted` ni
+  `rejected` n'a encore ete journalise — `configs/drift.yaml` exige 960 fenetres consecutives
+  (`confirmation_windows`, environ 16 h) avant une confirmation, donc rien n'est attendu avant la
+  matinee du 23/11 au plus tot.
+
+**Consequence pour les captures du 23/11 au matin** : le tableau de bord Grafana « pipeline »
+(score, alertes, derive — alimente par ce service) est vide par construction avant
+2026-11-22T21:15Z ; une capture doit couvrir une plage posterieure a cette heure, pas la derive du
+21/11 ni les deux premieres anomalies. Le tableau « infrastructure » (metriques brutes Prometheus)
+n'a pas cette limite et montre normalement toute la session depuis le 15/11.
