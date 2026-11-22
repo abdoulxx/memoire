@@ -73,6 +73,10 @@ class PrometheusSynthetique:
     """Faux Prometheus : une sinusoide par metrique, avec trous et pannes au choix."""
 
     trous: set[int] = field(default_factory=set)
+    # Metriques qui ne rendent jamais aucune serie (ex. reseau_entrant/sortant
+    # sans cAdvisor, D46) : contrairement a `trous`, aucun instant n'a de valeur,
+    # a aucun moment de la plage interrogee.
+    vides: set[str] = field(default_factory=set)
     pannes: int = 0
     decalage: float = 0.0
     bascule_ts: int = 0
@@ -95,10 +99,13 @@ class PrometheusSynthetique:
             raise ErreurPrometheus("Prometheus injoignable (panne simulee).")
         nom = expression  # les expressions du test sont les noms des metriques
         instants = grille(debut, fin, pas)
-        valeurs = np.array(
-            [np.nan if int(t) in self.trous else self.valeur(nom, int(t)) for t in instants],
-            dtype=np.float64,
-        )
+        if nom in self.vides:
+            valeurs = np.full(len(instants), np.nan, dtype=np.float64)
+        else:
+            valeurs = np.array(
+                [np.nan if int(t) in self.trous else self.valeur(nom, int(t)) for t in instants],
+                dtype=np.float64,
+            )
         return SerieTemporelle(instants=instants, valeurs=valeurs)
 
 
@@ -571,6 +578,75 @@ def test_un_trou_trop_long_fait_sauter_les_fenetres_concernees(service: Service)
     # Les fenetres qui recouvrent le trou long sont toutes sautees ; celles qui
     # n'en voient plus qu'une part assez courte repassent.
     assert boucle.n_sautees >= longueur
+    assert all(np.isfinite(r.score) for r in resultats)
+    boucle.arreter()
+
+
+def test_une_metrique_facultative_entierement_absente_est_mise_a_zero(
+    registre: RegistreModeles,
+    reglages_boucle: ReglagesBoucle,
+    features_config: dict[str, Any],
+    model_config: dict[str, Any],
+    tmp_path: Path,
+) -> None:
+    """Meme regle que le chargeur de sessions (D46 x D38).
+
+    Avant cette correction, `_combler` refusait toute fenetre dont une colonne
+    n'avait aucun point connu, meme facultative : sur un hote sans cAdvisor,
+    ou `reseau_entrant`/`reseau_sortant` ne rendent jamais aucune serie, cela
+    faisait sauter 100% des fenetres depuis le premier tick (constate en
+    production, service tournant depuis plusieurs jours sans aucune fenetre
+    scoree).
+    """
+    noms = (*METRIQUES, "reseau")
+    reglages_serveur = ReglagesServeur.depuis_config(
+        {
+            "prometheus": {"url": "http://exemple.invalide", "step_seconds": PAS},
+            "metriques": [{"nom": nom, "expr": nom, "obligatoire": True} for nom in METRIQUES]
+            + [{"nom": "reseau", "expr": "reseau", "obligatoire": False}],
+            "trous": {"max_points_consecutifs": 2},
+        },
+        tmp_path,
+    )
+    client = PrometheusSynthetique(vides={"reseau"})
+    instants = np.arange(1_700_000_000 - 599 * PAS, 1_700_000_000 + PAS, PAS, dtype=np.int64)
+    matrice = np.column_stack(
+        [
+            np.zeros(len(instants))
+            if nom == "reseau"
+            else np.array([client.valeur(nom, int(t)) for t in instants])
+            for nom in noms
+        ]
+    )
+    fenetres = make_windows(matrice, features_config, metric_names=list(noms))
+    detecteur = build_detector(model_config, features_config, 7)
+    detecteur.fit(fenetres.X)
+    signature = signature_depuis_config(reglages_serveur.noms, features_config, PAS)
+    version = registre.enregistrer(
+        detecteur, signature=signature, raison="initial_fit", reference_X=fenetres.X
+    )
+    registre.promouvoir(version)
+
+    horloge = Horloge(t=1_700_040_000 + reglages_boucle.retard_s)
+    boucle = _service(
+        registre,
+        reglages_serveur,
+        reglages_boucle,
+        features_config,
+        model_config,
+        client,
+        horloge,
+        StrategieEspionne(),
+    )
+    boucle.demarrer()
+    assert boucle.n_fenetres_vues == boucle.reglages.prefill_fenetres
+    assert len(boucle._historique) == boucle.reglages.prefill_fenetres
+
+    horloge.avancer(3 * PAS)
+    resultats = boucle.tick()
+
+    assert len(resultats) == 3
+    assert boucle.n_sautees == 0
     assert all(np.isfinite(r.score) for r in resultats)
     boucle.arreter()
 

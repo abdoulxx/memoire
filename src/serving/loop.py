@@ -445,13 +445,22 @@ class BoucleEnLigne:
         comble = bloc.astype(np.float64, copy=True)
         comble[~np.isfinite(comble)] = np.nan
         indices = np.arange(len(comble), dtype=np.float64)
-        for colonne in range(comble.shape[1]):
+        for colonne, metrique in enumerate(self.serveur.metriques):
             valeurs = comble[:, colonne]
             manquants = np.isnan(valeurs)
             if not manquants.any():
                 continue
             connus = ~manquants
             if not connus.any():
+                if not metrique.obligatoire:
+                    # Meme regle que le chargeur de sessions (D46 x D38,
+                    # datasets/serveur/loader.py::_combler) : une metrique
+                    # facultative entierement absente (reseau_entrant /
+                    # reseau_sortant sans cAdvisor) est mise a zero plutot que
+                    # refusee, sinon aucune fenetre n'est jamais scorable sur
+                    # un hote qui ne voit aucun conteneur.
+                    valeurs[:] = 0.0
+                    continue
                 return None
             # Bord : aucun voisin d'un cote, donc aucune interpolation possible.
             premier, dernier = (
