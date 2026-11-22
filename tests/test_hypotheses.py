@@ -11,8 +11,14 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.evaluation.hypotheses import _holm, _par_machine, par_groupe
+from src.evaluation.hypotheses import (
+    _bootstrap_ic95,
+    _holm,
+    _par_machine,
+    par_groupe,
+)
 from src.evaluation.hypotheses import tester as lancer_les_tests
+from src.evaluation.hypotheses import tester_scenarios_agreges as lancer_les_tests_agreges
 
 
 def _synthese(lignes: list[dict]) -> pd.DataFrame:
@@ -278,3 +284,155 @@ def test_les_moyennes_par_groupe_regroupent_bien_les_machines() -> None:
         groupes = par_groupe(chemin)
     assert set(groupes.groupe) == {"1", "3"}
     assert groupes[groupes.groupe == "1"].f1.iloc[0] == pytest.approx(0.3)
+
+
+# ------------------------------------------- tailles d'effet (n = 12 machines)
+
+
+def _appliquer_agrege(table: pd.DataFrame, **kwargs) -> pd.DataFrame:
+    """Passe une table en memoire a `tester_scenarios_agreges`, via un CSV temporaire."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as dossier:
+        chemin = Path(dossier) / "summary.csv"
+        table.to_csv(chemin, index=False)
+        return lancer_les_tests_agreges(chemin, **kwargs)
+
+
+def test_les_scenarios_sont_moyennes_avant_le_test_pas_apparies_flux_par_flux() -> None:
+    """Une machine donne un seul point, moyenne de ses scenarios injectes.
+
+    A la difference de la ligne `tous` de `tester` (n = machines x scenarios), ici
+    n = machines : machine-1-1 avec f1 = 0,2 puis 0,6 sur ses deux scenarios doit
+    peser pour 0,4, pas pour deux observations distinctes.
+    """
+    lignes = []
+    for scenario, f1 in (("s1_soudaine", 0.2), (("s4_recurrente"), 0.6)):
+        for i in range(1, 13):
+            lignes.append(
+                {
+                    "machine": f"machine-1-{i}",
+                    "scenario": scenario,
+                    "strategy": "proposed",
+                    "f1": f1,
+                }
+            )
+            lignes.append(
+                {"machine": f"machine-1-{i}", "scenario": scenario, "strategy": "static", "f1": 0.1}
+            )
+    resultats = _appliquer_agrege(_synthese(lignes))
+    ligne = resultats[(resultats.hypothese == "H1") & (resultats.metrique == "f1")].iloc[0]
+    assert ligne.n_machines == 12
+    assert ligne.difference_moyenne == pytest.approx(0.3)  # (0.2+0.6)/2 - 0.1
+
+
+def test_le_scenario_none_est_exclu_de_la_moyenne() -> None:
+    lignes = []
+    for i in range(1, 13):
+        lignes.append(
+            {"machine": f"machine-1-{i}", "scenario": "none", "strategy": "proposed", "f1": 0.9}
+        )
+        lignes.append(
+            {"machine": f"machine-1-{i}", "scenario": "none", "strategy": "static", "f1": 0.9}
+        )
+    assert _appliquer_agrege(_synthese(lignes)).empty
+
+
+def test_une_machine_sans_reference_est_ecartee_de_l_appariement() -> None:
+    lignes = []
+    for i in range(1, 8):
+        lignes.append(
+            {
+                "machine": f"machine-1-{i}",
+                "scenario": "s1_soudaine",
+                "strategy": "proposed",
+                "f1": 0.5,
+            }
+        )
+        if i != 7:
+            lignes.append(
+                {
+                    "machine": f"machine-1-{i}",
+                    "scenario": "s1_soudaine",
+                    "strategy": "static",
+                    "f1": 0.1,
+                }
+            )
+    resultats = _appliquer_agrege(_synthese(lignes))
+    ligne = resultats[(resultats.hypothese == "H1") & (resultats.metrique == "f1")].iloc[0]
+    assert ligne.n_machines == 6
+
+
+def test_correlation_rang_biserielle_vaut_un_quand_p_depasse_partout() -> None:
+    """Chaque ecart va dans le meme sens : la correlation appariee vaut +-1."""
+    lignes = []
+    for i in range(1, 13):
+        lignes.append(
+            {
+                "machine": f"machine-1-{i}",
+                "scenario": "s1_soudaine",
+                "strategy": "proposed",
+                "f1": 0.5,
+            }
+        )
+        lignes.append(
+            {
+                "machine": f"machine-1-{i}",
+                "scenario": "s1_soudaine",
+                "strategy": "static",
+                "f1": 0.2,
+            }
+        )
+    resultats = _appliquer_agrege(_synthese(lignes))
+    ligne = resultats[(resultats.hypothese == "H1") & (resultats.metrique == "f1")].iloc[0]
+    assert ligne.correlation_rang_biserielle == pytest.approx(1.0)
+    assert ligne.sens_observe == "superieur"
+
+
+def test_bootstrap_ic95_sur_un_ecart_constant_est_un_point() -> None:
+    """Douze machines au meme ecart : aucune variance a reechantillonner, l'IC est un point."""
+    import numpy as np
+
+    ecarts = np.full(12, 0.3)
+    bas, haut = _bootstrap_ic95(ecarts, n_tirages=1000, graine=42)
+    assert bas == pytest.approx(0.3)
+    assert haut == pytest.approx(0.3)
+
+
+def test_bootstrap_ic95_est_reproductible_avec_la_meme_graine() -> None:
+    import numpy as np
+
+    ecarts = np.array([0.1, -0.2, 0.3, 0.0, 0.4, -0.1, 0.2, 0.05, -0.05, 0.15, 0.25, -0.15])
+    a = _bootstrap_ic95(ecarts, n_tirages=500, graine=42)
+    b = _bootstrap_ic95(ecarts, n_tirages=500, graine=42)
+    assert a == b
+
+
+def test_holm_est_applique_par_hypothese_et_pas_entre_elles() -> None:
+    """H1 a 5 metriques, H3 n'en a que 4 sur ce jeu : les familles ne se melangent pas."""
+    lignes = []
+    for i in range(1, 13):
+        for strategie in ("proposed", "static", "periodic", "ablation"):
+            lignes.append(
+                {
+                    "machine": f"machine-1-{i}",
+                    "scenario": "s1_soudaine",
+                    "strategy": strategie,
+                    "f1": 0.5,
+                }
+            )
+    resultats = _appliquer_agrege(_synthese(lignes))
+    assert set(resultats[resultats.hypothese == "H1"].metrique) == {
+        "f1",
+        "f1_after",
+        "event_recall",
+        "false_alerts_per_hour",
+        "recovery_minutes",
+    }
+    assert set(resultats[resultats.hypothese == "H3"].metrique) == {
+        "n_promotions_degradantes",
+        "cost_n_promoted",
+        "f1",
+        "f1_after",
+    }

@@ -1135,6 +1135,74 @@ def hypotheses_command(
     typer.echo(f"-> {sortie}")
 
 
+@app.command("hypotheses-effets")
+def hypotheses_effets_command(
+    summary_path: str = typer.Option("results/summary.csv", help="Synthese a analyser."),
+    alpha: float = typer.Option(0.05, help="Risque de premiere espece, apres correction."),
+    n_boot: int = typer.Option(10_000, help="Tirages du bootstrap sur les machines."),
+    graine_boot: int = typer.Option(42, help="Graine du bootstrap."),
+    path: str = typer.Option("", help="Sortie. Vide = results/hypotheses_effets.csv."),
+) -> None:
+    """Tailles d'effet des trois hypotheses, un point par machine (n = 12).
+
+    Complement de `hypotheses` : meme plan de comparaisons (`PLAN`), mais les
+    quatre scenarios injectes sont moyennes par machine avant le test, au lieu
+    d'etre apparies flux par flux. S'y ajoutent, pour chaque metrique, la
+    difference moyenne appariee avec son intervalle a 95 % (bootstrap sur les
+    machines) et la correlation rang-biserielle appariee.
+    """
+    from pathlib import Path
+
+    import pandas as pd
+
+    from src.evaluation.hypotheses import (
+        HYPOTHESES_EFFETS_PATH,
+        PLAN,
+        ecrire,
+        tester_scenarios_agreges,
+    )
+
+    resultats = tester_scenarios_agreges(
+        summary_path, alpha=alpha, n_boot=n_boot, graine_boot=graine_boot
+    )
+    if resultats.empty:
+        typer.echo("Aucun rejeu avec derive injectee dans la synthese.")
+        raise typer.Exit(code=1)
+
+    for hypothese, plan in PLAN.items():
+        bloc = resultats[resultats.hypothese == hypothese]
+        if bloc.empty:
+            continue
+        typer.echo("")
+        typer.echo(
+            f"=== {hypothese} — {plan['question']} (n = {int(bloc.n_machines.max())} machines)"
+        )
+        typer.echo(
+            f"{'metrique':<28}{'diff. moy.':>12}{'IC95':>22}{'r rang-bis.':>13}"
+            f"{'p':>9}{'p Holm':>9}  verdict"
+        )
+        for ligne in bloc.itertuples():
+            p_brut = "-" if pd.isna(ligne.p_value) else f"{ligne.p_value:.4f}"
+            p_holm = "-" if pd.isna(ligne.p_holm) else f"{ligne.p_holm:.4f}"
+            ic = (
+                "-" if pd.isna(ligne.ic95_bas) else f"[{ligne.ic95_bas:.4f}; {ligne.ic95_haut:.4f}]"
+            )
+            r = (
+                "-"
+                if pd.isna(ligne.correlation_rang_biserielle)
+                else f"{ligne.correlation_rang_biserielle:.3f}"
+            )
+            typer.echo(
+                f"{ligne.metrique:<28}{ligne.difference_moyenne:>12.4f}{ic:>22}{r:>13}"
+                f"{p_brut:>9}{p_holm:>9}  {ligne.verdict}"
+            )
+
+    sortie = HYPOTHESES_EFFETS_PATH if not path else Path(path)
+    ecrire(resultats, sortie)
+    typer.echo("")
+    typer.echo(f"-> {sortie}")
+
+
 # --- Injection d'anomalies sur le serveur (livrable M4, phase C) -------------
 # Les garde-fous du §4.3 vivent dans `infra/injector/injector.py` et non ici :
 # le CLI ne doit etre qu'une facon de les appeler, jamais une facon de les

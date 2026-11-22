@@ -309,6 +309,160 @@ def tester(
     return resultats.reset_index(drop=True)
 
 
+HYPOTHESES_EFFETS_PATH = PROJECT_ROOT / "results" / "hypotheses_effets.csv"
+
+
+@dataclass(frozen=True)
+class ComparaisonAgregee:
+    """Une ligne de `results/hypotheses_effets.csv` : un point par machine (n=12)."""
+
+    hypothese: str
+    metrique: str
+    strategie: str
+    reference: str
+    sens_attendu: str
+    n_machines: int
+    n_ecarts_non_nuls: int
+    mediane_ecart: float | None
+    difference_moyenne: float | None
+    ic95_bas: float | None
+    ic95_haut: float | None
+    correlation_rang_biserielle: float | None
+    statistique: float | None
+    p_value: float | None
+    p_holm: float | None
+    sens_observe: str
+    verdict: str
+
+
+def _bootstrap_ic95(ecarts: np.ndarray, n_tirages: int, graine: int) -> tuple[float, float]:
+    """IC a 95 % de la difference moyenne, par tirage avec remise sur les machines.
+
+    Chaque tirage reechantillonne les **machines** (l'unite d'observation, OBS06),
+    pas les scenarios qui les composent : la correlation intra-machine entre
+    scenarios est donc preservee, exactement comme le test appparie la preserve.
+    """
+    rng = np.random.default_rng(graine)
+    n = len(ecarts)
+    indices = rng.integers(0, n, size=(n_tirages, n))
+    moyennes = ecarts[indices].mean(axis=1)
+    bas, haut = np.percentile(moyennes, [2.5, 97.5])
+    return float(bas), float(haut)
+
+
+def tester_scenarios_agreges(
+    summary_path: Path | str = "results/summary.csv",
+    alpha: float = 0.05,
+    n_boot: int = 10_000,
+    graine_boot: int = 42,
+) -> pd.DataFrame:
+    """Meme plan que `tester`, mais un seul point par machine (scenarios moyennes).
+
+    La ligne `scenario = tous` de `tester` apparie sur (machine, scenario), soit
+    n = 48 : elle teste si P se comporte mieux **flux par flux**. Celle-ci moyenne
+    d'abord les 4 scenarios injectes par machine, donc n = 12 : elle teste si P se
+    comporte mieux **en moyenne sur une machine**, une question plus conservatrice
+    et plus proche de celle que pose un jury (« P gagne-t-il globalement ? »).
+    Ajoute aux deux tables de `tester` les tailles d'effet que la seule p-valeur
+    ne donne pas : difference moyenne appariee avec IC a 95 % (bootstrap sur les
+    machines, 10 000 tirages, graine 42) et correlation rang-biserielle appariee
+    (Kerby, 2014 : somme des rangs signes / somme totale des rangs, dans [-1, 1]).
+    """
+    table = pd.read_csv(summary_path)
+    table = table[table.scenario != "none"]
+    if table.empty:
+        return pd.DataFrame()
+
+    par_machine_scenario = _par_machine(table)
+    numeriques = par_machine_scenario.select_dtypes("number").columns.tolist()
+    moyennes = (
+        par_machine_scenario[["strategy", "machine", *numeriques]]
+        .groupby(["strategy", "machine"], as_index=False)
+        .mean()
+    )
+
+    lignes: list[ComparaisonAgregee] = []
+    for hypothese, plan in PLAN.items():
+        nom_reference = str(plan["reference"])
+        metriques: dict[str, str] = plan["metriques"]
+        teste = moyennes[moyennes.strategy == STRATEGIE_TESTEE]
+        reference = moyennes[moyennes.strategy == nom_reference]
+        if teste.empty or reference.empty:
+            continue
+
+        famille: list[ComparaisonAgregee] = []
+        for metrique, sens in metriques.items():
+            if metrique not in moyennes.columns:
+                continue
+            paires = teste.merge(reference, on="machine", suffixes=("_a", "_b"))
+            a = paires[f"{metrique}_a"]
+            b = paires[f"{metrique}_b"]
+            valides = a.notna() & b.notna()
+            a, b = a[valides].to_numpy(), b[valides].to_numpy()
+            ecarts = a - b
+            non_nuls = ecarts[ecarts != 0]
+
+            statistique: float | None = None
+            p: float | None = None
+            correlation: float | None = None
+            if len(non_nuls) >= 5:
+                resultat = wilcoxon(a, b, zero_method="wilcox", alternative="two-sided")
+                statistique = float(resultat.statistic)
+                p = float(resultat.pvalue)
+                rangs = rankdata(np.abs(non_nuls))
+                somme_rangs_signes = float(np.sum(np.sign(non_nuls) * rangs))
+                total_rangs = len(non_nuls) * (len(non_nuls) + 1) / 2
+                correlation = somme_rangs_signes / total_rangs
+
+            if len(non_nuls) == 0:
+                sens_observe = "egal"
+            else:
+                sens_observe = "superieur" if correlation and correlation > 0 else "inferieur"
+
+            ic_bas: float | None = None
+            ic_haut: float | None = None
+            if len(ecarts) >= 2:
+                ic_bas, ic_haut = _bootstrap_ic95(ecarts, n_boot, graine_boot)
+
+            famille.append(
+                ComparaisonAgregee(
+                    hypothese=hypothese,
+                    metrique=metrique,
+                    strategie=STRATEGIE_TESTEE,
+                    reference=nom_reference,
+                    sens_attendu=sens,
+                    n_machines=int(len(a)),
+                    n_ecarts_non_nuls=int(len(non_nuls)),
+                    mediane_ecart=float(np.median(ecarts)) if len(ecarts) else None,
+                    difference_moyenne=float(np.mean(ecarts)) if len(ecarts) else None,
+                    ic95_bas=ic_bas,
+                    ic95_haut=ic_haut,
+                    correlation_rang_biserielle=correlation,
+                    statistique=statistique,
+                    p_value=p,
+                    p_holm=None,
+                    sens_observe=sens_observe,
+                    verdict="",
+                )
+            )
+
+        ajustees = _holm([c.p_value for c in famille])
+        for comparaison, p_holm in zip(famille, ajustees, strict=True):
+            lignes.append(
+                ComparaisonAgregee(
+                    **{
+                        **asdict(comparaison),
+                        "p_holm": p_holm,
+                        "verdict": _verdict(
+                            comparaison.sens_attendu, comparaison.sens_observe, p_holm, alpha
+                        ),
+                    }
+                )
+            )
+
+    return pd.DataFrame([asdict(ligne) for ligne in lignes])
+
+
 def par_groupe(summary_path: Path | str = "results/summary.csv") -> pd.DataFrame:
     """Moyennes par groupe SMD, que le §4 demande de rapporter a cote des tests.
 
