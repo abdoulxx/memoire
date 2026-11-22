@@ -15,6 +15,8 @@ dispersion repond a « une autre machine donnerait-elle autre chose ? ».
 
 | Metrique | B0 — modele fige | B1 — periodique | P — proposee | A1 — P sans validation |
 |---|---|---|---|---|
+| Precision par fenetre | 0.288 ± 0.046 | 0.340 ± 0.049 | 0.321 ± 0.041 | 0.321 ± 0.041 |
+| Rappel par fenetre | 0.371 ± 0.060 | 0.244 ± 0.048 | 0.317 ± 0.053 | 0.317 ± 0.053 |
 | F1 par fenetre | 0.265 ± 0.033 | 0.252 ± 0.036 | 0.277 ± 0.033 | 0.277 ± 0.033 |
 | F1 avant la derive | 0.177 ± 0.048 | 0.191 ± 0.049 | 0.177 ± 0.048 | 0.177 ± 0.048 |
 | F1 apres la derive | 0.306 ± 0.035 | 0.324 ± 0.045 | 0.326 ± 0.035 | 0.326 ± 0.035 |

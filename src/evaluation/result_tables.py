@@ -33,6 +33,8 @@ TABLES_PATH = PROJECT_ROOT / "docs/tableaux_chapitre6.md"
 # Metrique -> (libelle du memoire, nombre de decimales). L'ordre suit le §7 :
 # qualite de detection, adaptation, cout, fiabilite des mises a jour.
 METRIQUES = [
+    ("precision", "Precision par fenetre", 3),
+    ("recall", "Rappel par fenetre", 3),
     ("f1", "F1 par fenetre", 3),
     ("f1_before", "F1 avant la derive", 3),
     ("f1_after", "F1 apres la derive", 3),
