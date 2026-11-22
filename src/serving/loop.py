@@ -222,6 +222,14 @@ class MesuresFenetre:
             else 0.0
         )
 
+    @property
+    def mediane(self) -> float:
+        return float(np.median(self.durees_ms)) if self.durees_ms else 0.0
+
+    @property
+    def maximum(self) -> float:
+        return float(np.max(self.durees_ms)) if self.durees_ms else 0.0
+
 
 @dataclass(frozen=True)
 class ResultatFenetre:
@@ -633,7 +641,9 @@ class BoucleEnLigne:
             # journalises que lorsqu'ils declenchent quelque chose ; Grafana a
             # besoin de la serie complete, fenetre par fenetre.
             self.exporteur.observer_fenetre(resultat, decision.details)
-            self.exporteur.observer_mesures(self.mesures.moyenne, self.mesures.p95)
+            self.exporteur.observer_mesures(
+                self.mesures.moyenne, self.mesures.p95, self.mesures.mediane, self.mesures.maximum
+            )
         return resultat
 
     # ---------------------------------------------------------- reentrainement
@@ -764,7 +774,9 @@ class BoucleEnLigne:
             n_promoted=self.n_promotions,
             n_rejected=self.n_rejets,
             window_ms_mean=round(self.mesures.moyenne, 3),
+            window_ms_median=round(self.mesures.mediane, 3),
             window_ms_p95=round(self.mesures.p95, 3),
+            window_ms_max=round(self.mesures.maximum, 3),
         )
         # Force : le resume de session vient d'etre journalise, et il serait en
         # attente de regroupement alors que plus aucun tick ne suivra. C'est le

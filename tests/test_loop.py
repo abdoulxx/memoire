@@ -934,6 +934,8 @@ def test_executer_rend_la_main_et_journalise_les_compteurs(service: Service) -> 
     assert derniere["event"] == "service_stop"
     assert derniere["details"]["n_windows"] == boucle.n_fenetres_vues
     assert derniere["details"]["window_ms_mean"] > 0
+    assert derniere["details"]["window_ms_median"] > 0
+    assert derniere["details"]["window_ms_max"] >= derniere["details"]["window_ms_mean"]
     assert derniere["details"]["n_alerts"] == boucle.n_alertes
 
 

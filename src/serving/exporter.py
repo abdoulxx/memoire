@@ -161,6 +161,16 @@ class ExporteurDetection:
             "Temps de traitement d'une fenetre au 95e percentile, reentrainement exclu.",
             registry=self.registre,
         )
+        self.duree_mediane = Gauge(
+            "mdrift_window_duration_ms_median",
+            "Temps de traitement median d'une fenetre, reentrainement exclu (§9).",
+            registry=self.registre,
+        )
+        self.duree_max = Gauge(
+            "mdrift_window_duration_ms_max",
+            "Temps de traitement maximal d'une fenetre, reentrainement exclu (§9).",
+            registry=self.registre,
+        )
         self.budget = Gauge(
             "mdrift_window_budget_ms",
             "Intervalle de collecte en millisecondes : la borne du temps reel (I7 / T1).",
@@ -284,9 +294,11 @@ class ExporteurDetection:
         except Exception:  # noqa: BLE001 - voir `observer_evenement`
             return
 
-    def observer_mesures(self, moyenne: float, p95: float) -> None:
+    def observer_mesures(self, moyenne: float, p95: float, mediane: float, maximum: float) -> None:
         self.duree_moyenne.set(moyenne)
         self.duree_p95.set(p95)
+        self.duree_mediane.set(mediane)
+        self.duree_max.set(maximum)
 
     # ---------------------------------------------------------------- service
 

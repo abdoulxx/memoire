@@ -145,6 +145,8 @@ def test_toutes_les_series_valent_zero_avant_le_premier_evenement() -> None:
         "mdrift_last_window_timestamp_seconds",
         "mdrift_window_duration_ms_mean",
         "mdrift_window_duration_ms_p95",
+        "mdrift_window_duration_ms_median",
+        "mdrift_window_duration_ms_max",
         "mdrift_drift_share",
         "mdrift_drift_streak",
         "mdrift_drift_features",
@@ -353,9 +355,11 @@ def test_une_strategie_sans_surveillance_laisse_les_jauges_de_derive_a_zero() ->
 
 def test_les_mesures_de_temps_sont_exposees_avec_leur_budget() -> None:
     exporteur = ExporteurDetection(budget_ms=60_000.0)
-    exporteur.observer_mesures(moyenne=18.4, p95=41.2)
+    exporteur.observer_mesures(moyenne=18.4, p95=41.2, mediane=15.0, maximum=52.7)
     assert _valeur(exporteur, "mdrift_window_duration_ms_mean") == 18.4
     assert _valeur(exporteur, "mdrift_window_duration_ms_p95") == 41.2
+    assert _valeur(exporteur, "mdrift_window_duration_ms_median") == 15.0
+    assert _valeur(exporteur, "mdrift_window_duration_ms_max") == 52.7
     assert _valeur(exporteur, "mdrift_window_budget_ms") == 60_000.0
 
 
