@@ -1203,6 +1203,118 @@ def hypotheses_effets_command(
     typer.echo(f"-> {sortie}")
 
 
+@app.command("pr-auc")
+def pr_auc_command(
+    runs_dir: str = typer.Option("results/runs", help="Racine des traces de rejeu."),
+    dataset_config: str = typer.Option(
+        "",
+        help="Perimetre de machines. Vide = toutes celles presentes dans les traces : "
+        "pour un chiffre cite au memoire, passer datasets/smd_eval.yaml.",
+    ),
+    path: str = typer.Option("", help="Fichier de sortie. Vide = results/pr_auc_margin.csv."),
+) -> None:
+    """Average precision (PR-AUC sans interpolation) sur la marge score - seuil.
+
+    Complement demande sur les resultats M3 deja rejoues (D48) : la marge
+    (`scores - thresholds`) est la seule variable continue comparable d'un
+    reentrainement a l'autre, le score brut suivant le seuil courant. Ne
+    depend ni de `sklearn` ni de `scipy` (`average_precision` est reimplementee
+    en numpy pur, definition de Davis & Goadrich 2006) : contrairement a
+    `promotions`, cette commande n'importe pas `src.evaluation.replay`.
+    """
+    from pathlib import Path
+
+    import pandas as pd
+
+    from src.config import PROJECT_ROOT
+    from src.evaluation.margins import collect_pr_auc
+
+    sortie = PROJECT_ROOT / "results" / "pr_auc_margin.csv" if not path else Path(path)
+    table = pd.DataFrame(collect_pr_auc(runs_dir))
+    if table.empty:
+        typer.echo("Aucune trace trouvee. Les rejeux ont-ils ete executes ?")
+        raise typer.Exit(code=1)
+    if dataset_config:
+        machines = set(load_config(dataset_config)["machines"])
+        inconnues = machines - set(table["machine"].unique())
+        if inconnues:
+            typer.echo(
+                f"{len(inconnues)} machine(s) du perimetre sans trace : "
+                f"{', '.join(sorted(inconnues))}"
+            )
+        table = table[table["machine"].isin(machines)]
+        if table.empty:
+            typer.echo("Aucune trace sur ce perimetre.")
+            raise typer.Exit(code=1)
+    sortie.parent.mkdir(parents=True, exist_ok=True)
+    table.to_csv(sortie, index=False)
+
+    typer.echo(f"{len(table)} rejeux, {table.machine.nunique()} machines.")
+    typer.echo("\nPR-AUC moyen (marge score-seuil), par strategie :")
+    typer.echo(
+        table.groupby("strategy")["pr_auc_margin"]
+        .agg(["mean", "std", "count"])
+        .round(4)
+        .sort_values("mean", ascending=False)
+        .to_string()
+    )
+    typer.echo(f"\n-> {sortie}")
+
+
+@app.command("evenements-b0-vs-p")
+def evenements_b0_vs_p_command(
+    runs_dir: str = typer.Option("results/runs", help="Racine des traces de rejeu."),
+    dataset_config: str = typer.Option(
+        "datasets/smd_eval.yaml", help="Perimetre de machines (sert aussi a reconstruire le flux)."
+    ),
+    features_config: str = typer.Option("features.yaml"),
+    evaluation_config: str = typer.Option("evaluation.yaml"),
+    baseline: str = typer.Option("static", help="Strategie de reference (B0 par defaut)."),
+    challenger: str = typer.Option("proposed", help="Strategie comparee (P par defaut)."),
+    path: str = typer.Option("", help="Fichier de sortie. Vide = results/evenements_b0_vs_p.csv."),
+) -> None:
+    """Compare deux strategies evenement par evenement (quels ratent l'une et pas l'autre).
+
+    Complement demande sur les resultats M3 deja rejoues (D48), aucun rejeu
+    relance : les evenements verite-terrain sont reconstruits directement avec
+    `datasets.smd.loader` et `scenarios.injection` (meme logique que
+    `src.evaluation.streams.build_smd_stream`, sans passer par `ReplayStream`),
+    puis compares aux `alerts` deja ecrites dans `traces.npz`. Ne depend ni de
+    `sklearn` ni de `scipy`. `end_index` est revalide bit a bit contre celui de
+    chaque `traces.npz` avant toute comparaison ; un desaccord ecarte le rejeu
+    plutot que de produire un chiffre non verifie.
+    """
+    from pathlib import Path
+
+    import pandas as pd
+
+    from src.config import PROJECT_ROOT
+    from src.evaluation.event_comparison import collect_event_comparison
+
+    sortie = PROJECT_ROOT / "results" / "evenements_b0_vs_p.csv" if not path else Path(path)
+    lignes = collect_event_comparison(
+        runs_dir,
+        dataset_config=dataset_config,
+        features_config_path=features_config,
+        evaluation_config_path=evaluation_config,
+        baseline=baseline,
+        challenger=challenger,
+    )
+    table = pd.DataFrame(lignes)
+    if table.empty:
+        typer.echo("Aucun evenement compare. Les rejeux des deux strategies sont-ils presents ?")
+        raise typer.Exit(code=1)
+    sortie.parent.mkdir(parents=True, exist_ok=True)
+    table.to_csv(sortie, index=False)
+
+    typer.echo(f"{len(table)} evenements compares, {table.machine.nunique()} machines.")
+    typer.echo("\nRepartition :")
+    typer.echo(table["statut"].value_counts().to_string())
+    typer.echo("\nPar machine :")
+    typer.echo(pd.crosstab(table["machine"], table["statut"]).to_string())
+    typer.echo(f"\n-> {sortie}")
+
+
 # --- Injection d'anomalies sur le serveur (livrable M4, phase C) -------------
 # Les garde-fous du §4.3 vivent dans `infra/injector/injector.py` et non ici :
 # le CLI ne doit etre qu'une facon de les appeler, jamais une facon de les
