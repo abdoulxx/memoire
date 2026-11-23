@@ -659,11 +659,18 @@ depuis le demarrage, avec les heures** :
   premiere fenetre reellement scoree de toute la session (position 399, score 0,699 contre seuil
   0,555 — alerte). Un second redemarrage a 21:20:05Z (ajout mediane/max du temps de traitement,
   sans rapport avec D47) a repris le scoring normalement (`online_20261122T212005Z`).
-- **21:15Z → 21:24Z (cinq fenetres observees a ce jour)** : chaque fenetre alerte, score stable
-  entre 0,68 et 0,70. Aucun `drift_signal`, `drift_confirmed`, `retrain_start/end`, `promoted` ni
-  `rejected` n'a encore ete journalise — `configs/drift.yaml` exige 960 fenetres consecutives
-  (`confirmation_windows`, environ 16 h) avant une confirmation, donc rien n'est attendu avant la
-  matinee du 23/11 au plus tot.
+- **21:15Z → 06:21Z le 23/11 (toute la nuit)** : chaque fenetre alerte sans interruption (score
+  entre 0,67 et 0,70 contre un seuil de 0,555, position 940 a 06:21Z). L'injection `erreurs`
+  programmee la veille a bien tourne, sans intervention manuelle : **2026-11-22T21:57:08Z →
+  21:59:08Z**, intensite 0,2, etiquetee dans `data/labels/m6_session_01.csv`.
+- **2026-11-23T05:39:20Z** : premier `drift_signal` journalise (position 898, 500e fenetre
+  reellement scoree depuis 21:20:05Z) : **100 % des 24 features utilisables** au-dela du seuil KS
+  (`statistic_median: 0,9541`), `streak: 1` — pas encore de persistance. Aucun `drift_confirmed`,
+  `retrain_start/end`, `promoted` ni `rejected` n'a ete journalise a ce jour.
+  `configs/drift.yaml` exige 960 fenetres consecutives (`confirmation_windows`, ~16 h) : si le
+  streak se maintient sans interruption, une confirmation n'arriverait pas avant environ
+  **2026-11-23T21:39Z** — apres l'echeance du 23/11 14:00Z. A ne pas presenter comme acquis avant
+  verification continue.
 
 **Consequence pour les captures du 23/11 au matin** : le tableau de bord Grafana « pipeline »
 (score, alertes, derive — alimente par ce service) est vide par construction avant
