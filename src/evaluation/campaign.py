@@ -179,7 +179,7 @@ def run_campaign(
                 stream = build_smd_stream(machine, configs["features"], scenario, seed)
                 for key, strategy_config in pending.items():
                     rows.append(
-                        _run_one(
+                        run_one(
                             stream=stream,
                             strategy_key=key,
                             strategy_config=strategy_config,
@@ -193,7 +193,7 @@ def run_campaign(
     return pd.DataFrame(rows)
 
 
-def _run_one(
+def run_one(
     stream: ReplayStream,
     strategy_key: str,
     strategy_config: dict[str, Any],

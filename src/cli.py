@@ -1632,6 +1632,158 @@ def session_info(
             typer.echo(f"    {ligne['start_ts']} -> {ligne['end_ts']} {ligne.get('type', '?')}")
 
 
+@app.command("session-replay")
+def session_replay(
+    run_id: str = typer.Argument(..., help="Session enregistree a rejouer."),
+    strategies: str = typer.Option(
+        "static,periodic,proposed,ablation", help="Strategies a rejouer (B0,B1,P,A1)."
+    ),
+    config: str = typer.Option("datasets/serveur.yaml", help="Configuration de la source."),
+    features: str = typer.Option("features.yaml", help="Configuration des features."),
+    model: str = typer.Option("model.yaml", help="Configuration du modele."),
+    evaluation: str = typer.Option("evaluation.yaml", help="Configuration de l'evaluation."),
+    drift: str = typer.Option("drift.yaml", help="Configuration de la surveillance de derive."),
+    seed: int = typer.Option(42, help="Graine du modele initial et des reentrainements."),
+    resume: bool = typer.Option(
+        True, help="Saute les strategies deja presentes dans results/summary.csv."
+    ),
+) -> None:
+    """Rejoue B0, B1, P et A1 sur une session enregistree, dans results/summary.csv.
+
+    Un seul flux est construit pour la session (comme pour une campagne SMD) et
+    rejoue tel quel par chaque strategie, pour que les quatre bras soient
+    comparables (§6.1.1). Chaque rejeu ecrit aussi ses traces dans
+    `results/runs/serveur/<run_id>/...`, utilisees ensuite par `session-report`
+    et par les figures.
+    """
+    from datasets.serveur.recorder import ErreurSession
+    from src.evaluation.session_campaign import run_session_campaign
+
+    try:
+        table = run_session_campaign(
+            run_id=run_id,
+            strategies=strategies,
+            dataset_config=config,
+            features_config=features,
+            model_config=model,
+            evaluation_config=evaluation,
+            drift_config=drift,
+            seed=seed,
+            resume=resume,
+            on_row=lambda row: typer.echo(
+                f"  -> {row['strategy']:<10} F1={row.get('f1', float('nan')):.3f} "
+                f"reent.={row.get('cost_n_retrains', 0)} "
+                f"promu={row.get('cost_n_promoted', 0)} "
+                f"rejet={row.get('cost_n_rejected', 0)}"
+            ),
+        )
+    except ErreurSession as erreur:
+        typer.echo(f"Session illisible : {erreur}", err=True)
+        raise typer.Exit(code=2) from erreur
+
+    if table.empty:
+        typer.echo("Rien a rejouer : toutes les strategies demandees sont deja dans summary.csv.")
+    else:
+        typer.echo(f"{len(table)} rejeu(x) ecrit(s) dans results/summary.csv")
+
+
+@app.command("session-report")
+def session_report(
+    run_id: str = typer.Argument(..., help="Session rejouee (voir `mdrift session-replay`)."),
+    strategies: str = typer.Option(
+        "static,periodic,proposed,ablation", help="Strategies a inclure (B0,B1,P,A1)."
+    ),
+    config: str = typer.Option("datasets/serveur.yaml", help="Configuration de la source."),
+    features: str = typer.Option("features.yaml", help="Configuration des features."),
+    evaluation: str = typer.Option("evaluation.yaml", help="Configuration de l'evaluation."),
+    seed: int = typer.Option(42, help="Graine utilisee au rejeu."),
+) -> None:
+    """Assemble le rapport detaille d'une session rejouee, au-dela de summary.csv.
+
+    Suppose que `mdrift session-replay <run_id>` a deja ecrit les traces des
+    strategies demandees. Ecrit `results/session_reports/<run_id>/` :
+    `strategies.csv` (une ligne par strategie, metriques + PR-AUC + horodatages
+    reels de confirmation de derive et de reentrainement pour P et A1),
+    `anomalies.csv` (une ligne par anomalie etiquetee x strategie, detectee ou
+    non et avec quel delai) et `report.json` (fenetres, derives reelles, note
+    sur le doublon pic_cpu du 23/11).
+    """
+    import pandas as pd
+
+    from src.evaluation.session_report import build_session_report, write_session_report
+
+    strategy_names = tuple(item.strip() for item in strategies.split(",") if item.strip())
+    report = build_session_report(
+        run_id=run_id,
+        dataset_config=config,
+        features_config=features,
+        evaluation_config=evaluation,
+        seed=seed,
+        strategies=strategy_names,
+    )
+
+    manquantes = [
+        ligne["strategy"] for _, ligne in report["strategies"].iterrows() if not ligne["disponible"]
+    ]
+    if manquantes:
+        typer.echo(
+            f"ATTENTION : pas de traces pour {', '.join(manquantes)} "
+            "(lancer `mdrift session-replay` pour ces strategies)."
+        )
+
+    directory = write_session_report(report, run_id)
+
+    fenetres = report["windows"]
+    typer.echo(
+        f"fenetres        total={fenetres['n_windows_total']} "
+        f"entrainement={fenetres['n_windows_train']} evaluation={fenetres['n_windows_eval']}"
+    )
+    typer.echo(f"doublon pic_cpu {report['doublon_pic_cpu']}")
+    for _, ligne in report["strategies"].iterrows():
+        if not ligne["disponible"]:
+            continue
+        extrait = f"  -> {ligne['strategy']:<10} F1={ligne.get('f1', float('nan')):.3f}"
+        if "drift_confirmed_at" in ligne.index and pd.notna(ligne["drift_confirmed_at"]):
+            extrait += f" derive_confirmee={ligne['drift_confirmed_at']}"
+        if "retrain_at" in ligne.index and pd.notna(ligne["retrain_at"]):
+            extrait += f" reentrainement={ligne['retrain_at']}"
+        typer.echo(extrait)
+    typer.echo(f"rapport ecrit dans {directory}")
+
+
+@app.command("session-figure")
+def session_figure(
+    run_id: str = typer.Argument(..., help="Session rejouee (voir `mdrift session-replay`)."),
+    strategies: str = typer.Option(
+        "static,periodic,proposed", help="Strategies a tracer (B0,B1,P)."
+    ),
+    config: str = typer.Option("datasets/serveur.yaml", help="Configuration de la source."),
+    features: str = typer.Option("features.yaml", help="Configuration des features."),
+    seed: int = typer.Option(42, help="Graine utilisee au rejeu."),
+) -> None:
+    """Trace le score et les alertes de B0, B1 et P sur une session, derive et anomalies marquees.
+
+    Suppose que `mdrift session-replay <run_id>` a deja ecrit les traces des
+    strategies demandees. Ecrit `docs/figures/scores_session_<run_id>.png`.
+    """
+    from src.evaluation.session_figures import plot_session_scores
+
+    strategy_names = tuple(item.strip() for item in strategies.split(",") if item.strip())
+    try:
+        destination = plot_session_scores(
+            run_id=run_id,
+            strategies=strategy_names,
+            seed=seed,
+            dataset_config=config,
+            features_config=features,
+        )
+    except FileNotFoundError as erreur:
+        typer.echo(str(erreur), err=True)
+        raise typer.Exit(code=1) from erreur
+
+    typer.echo(f"-> {destination.relative_to(PROJECT_ROOT_DISPLAY)}")
+
+
 def _registre(serving: str):
     """Construit l'acces au registre depuis `configs/serving.yaml`."""
     from src.tracking.registry import RegistreModeles, ReglagesRegistre
