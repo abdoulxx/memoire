@@ -699,12 +699,19 @@ actif, archivee dans `data/archives/online/`) **et du run courant** `online_2026
   etiquetee (`data/labels/m6_session_01.csv`) se termine le 24/11 a 19:03:08Z ; `mdrift chaos-list`
   et `docker ps` confirment zero conteneur d'injection residuel au 26/11.
 - **Le plancher de reentrainement a ete repousse par un redemarrage non programme** du conteneur
-  `memoire-detection`, survenu le 25/11 a 06:23:59Z (cause non identifiee depuis ce poste). Le
-  compteur `n_train_available` (jamais persiste) est reparti du prechargement habituel (~400
-  fenetres) au lieu de continuer depuis ou il en etait ; la derive a ete re-confirmee le 26/11 a
-  06:42:20Z, de nouveau refusee par le garde-fou (`n_train_available: 418` contre
-  `min_train_windows: 5450`). Plancher desormais attendu vers le **28/11 en fin d'apres-midi UTC**
-  si le service n'est plus redemarre d'ici la, et non le 27/11 09:30 initialement attendu par Sidy.
+  `memoire-detection`, survenu le 25/11 a 06:23:59Z. Cause identifiee apres coup : ce redemarrage
+  est le premier a appliquer la modification locale, non commitee, de `configs/notify.yaml`
+  (`actif: true`, editee sur le serveur le 24/11 a 10:17:22Z) — confirme par la banniere de service
+  du run qui en resulte (`online_20261125T062356Z`, « notifications Telegram, 9 evenements »),
+  absente du run precedent demarre avant cette modification ; aucune panne ni tache planifiee ne
+  coincide avec cet instant (voir D51 pour le detail). Le compteur `n_train_available` (jamais
+  persiste) est reparti du prechargement habituel (~400 fenetres) au lieu de continuer depuis ou il
+  en etait ; la derive a ete re-confirmee le 26/11 a 06:42:20Z (position 1857), de nouveau refusee
+  par le garde-fou (`n_train_available: 418` contre `min_train_windows: 5450`). Le plancher reel
+  n'est pas la position 5450 mais **6889** (`min_train_windows + reserved_windows − 1`, reserve de
+  validation V comprise), desormais attendu vers le **29/11 a 18:30–18:35Z** (6889 − 1857 = 5032
+  fenetres a 60 s depuis la re-confirmation) si le service n'est plus redemarre d'ici la — et non
+  le 27/11 09:30 initialement attendu par Sidy, ni le 28/11 estime avant cette correction (D51).
   Decision : ne pas redemarrer `memoire-detection` avant cette echeance ; le correctif du
   notificateur (notifications par episode plutot que par fenetre) est code et teste mais pas
   deploye, pour la meme raison.
