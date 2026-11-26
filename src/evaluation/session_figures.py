@@ -25,10 +25,20 @@ import numpy as np  # noqa: E402
 
 from src.evaluation.figures import DPI, FIGURES_DIR, _spans  # noqa: E402
 from src.evaluation.replay import run_directory  # noqa: E402
-from src.evaluation.result_figures import COULEURS, LIBELLES  # noqa: E402
+from src.evaluation.result_figures import COULEURS  # noqa: E402
 from src.evaluation.session_campaign import load_session_stream  # noqa: E402
 
 STRATEGIES_FIGURE = ("static", "periodic", "proposed")
+
+# Libelles avec accents, propres a cette figure (destinee au memoire) : les
+# labels de `result_figures.LIBELLES` sont partages avec les figures de
+# campagne SMD deja produites et ne sont pas touches ici.
+LIBELLES_FIGURE = {
+    "static": "B0 — modèle figé",
+    "periodic": "B1 — périodique",
+    "proposed": "P — proposée",
+    "ablation": "A1 — P sans validation",
+}
 
 
 def plot_session_scores(
@@ -38,7 +48,7 @@ def plot_session_scores(
     dataset_config: str = "datasets/serveur.yaml",
     features_config: str = "features.yaml",
     output_path: str | Path | None = None,
-    title: str | None = None,
+    score_min: float = 0.35,
 ) -> Path:
     """Score d'anomalie et alertes de B0, B1 et P sur une session, derive et anomalies marquees.
 
@@ -63,12 +73,12 @@ def plot_session_scores(
             f"(lancer `mdrift session-replay {run_id}` pour ces strategies)."
         )
 
-    figure, axes = plt.subplots(figsize=(11, 4.6), constrained_layout=True)
+    figure, axes = plt.subplots(figsize=(11, 5.2), constrained_layout=True)
 
     hours = np.arange(len(stream.y)) * intervalle / 3600.0
     for first, last in _spans(stream.y.astype(bool)):
         axes.axvspan(hours[first], hours[last], color="#d62728", alpha=0.16, linewidth=0)
-    axes.axvspan(np.nan, np.nan, color="#d62728", alpha=0.16, label="Anomalie etiquetee")
+    axes.axvspan(np.nan, np.nan, color="#d62728", alpha=0.16, label="Anomalie étiquetée")
 
     for strategie in strategies:
         traces = traces_par_strategie[strategie]
@@ -79,7 +89,7 @@ def plot_session_scores(
             linewidth=0.8,
             color=couleur,
             alpha=0.85,
-            label=f"{LIBELLES[strategie]} — score",
+            label=f"{LIBELLES_FIGURE[strategie]} — score",
         )
         alerts = traces["alerts"].astype(bool)
         if alerts.any():
@@ -89,42 +99,52 @@ def plot_session_scores(
                 s=4,
                 color=couleur,
                 zorder=3,
-                label=f"{LIBELLES[strategie]} — alertes ({int(alerts.sum())})",
+                label=f"{LIBELLES_FIGURE[strategie]} — alertes ({int(alerts.sum())})",
             )
         changements = traces.get("model_changes")
         if changements is not None and len(changements):
-            axes.scatter(
-                changements * intervalle / 3600.0,
-                np.full(len(changements), -0.04),
-                marker="^",
-                s=20,
-                color=couleur,
-                clip_on=False,
-                label="_nolegend_",
-            )
+            # Le premier element (0) est le modele initial, pas une promotion
+            # (`replay.py` l'initialise ainsi pour toute strategie) : exclu du
+            # marqueur, sous peine de laisser croire a une promotion a l'origine.
+            promotions = changements[changements > 0]
+            if len(promotions):
+                axes.scatter(
+                    promotions * intervalle / 3600.0,
+                    np.full(len(promotions), score_min),
+                    marker="^",
+                    s=20,
+                    color=couleur,
+                    clip_on=False,
+                    zorder=4,
+                    label="_nolegend_",
+                )
 
     derive_fenetre = stream.drift_window()
     if derive_fenetre is not None:
         heure_derive = derive_fenetre * intervalle / 3600.0
         axes.axvline(
-            heure_derive, color="black", linestyle="--", linewidth=1.0, label="debut de la derive"
+            heure_derive,
+            color="black",
+            linestyle="--",
+            linewidth=1.0,
+            label="début de la dérive",
         )
 
-    axes.set_xlabel("Temps depuis le debut du flux evalue (heures)")
+    axes.set_xlabel("Temps depuis le début du flux évalué (heures)")
     axes.set_ylabel("Score d'anomalie")
     axes.set_xlim(hours[0], hours[-1])
-    axes.set_ylim(bottom=-0.08)
+    axes.set_ylim(bottom=score_min)
     axes.grid(alpha=0.25, linewidth=0.5)
-    axes.legend(loc="upper left", fontsize=7.5, framealpha=0.9, ncols=2)
-    if title:
-        axes.set_title(title, fontsize=11)
-    else:
-        axes.set_title(
-            f"Session {run_id} — B0, B1, P (triangles : promotions de modele)", fontsize=10
-        )
+    axes.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.16),
+        fontsize=7.5,
+        framealpha=0.9,
+        ncols=4,
+    )
 
     destination = Path(output_path) if output_path else FIGURES_DIR / f"scores_session_{run_id}.png"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(destination, dpi=DPI)
+    figure.savefig(destination, dpi=DPI, bbox_inches="tight")
     plt.close(figure)
     return destination
