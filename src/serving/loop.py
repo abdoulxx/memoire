@@ -501,6 +501,22 @@ class BoucleEnLigne:
             )
         return np.asarray(fenetres.X[0], dtype=np.float64)
 
+    def _features_en_ecart(self, features: np.ndarray, n: int = 3) -> list[dict[str, Any]]:
+        """Les `n` features les plus eloignees de l'entrainement, pour expliquer une alerte.
+
+        Ecart standardise (`IsolationForestDetector.z_scores`) et non la valeur
+        brute : les metriques n'ont pas la meme echelle, et c'est l'ecart par
+        rapport a la normale apprise qui interesse une notification, pas la
+        magnitude. Les noms de features (`<metrique>_<agregat>`) sont generiques
+        au sens du §4.3 : jamais un nom d'hote, de conteneur ou de client.
+        """
+        assert self.champion is not None
+        z = self.champion.z_scores(features.reshape(1, -1))[0]
+        ordre = np.argsort(-np.abs(z))[:n]
+        return [
+            {"feature": self.signature.feature_names[i], "z": round(float(z[i]), 2)} for i in ordre
+        ]
+
     # ------------------------------------------------------------------- tick
 
     def tick(self) -> list[ResultatFenetre]:
@@ -617,6 +633,8 @@ class BoucleEnLigne:
                 score=round(score, 6),
                 threshold=round(seuil, 6),
                 interpolee=interpolee,
+                version=self.version.version if self.version is not None else None,
+                top_features=self._features_en_ecart(features),
             )
         for event in decision.events:
             self.journal.ecrire(event, fin_ts=fin_ts, position=position, **decision.details)

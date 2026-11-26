@@ -35,3 +35,4 @@ data/*.tgz
 # Artefacts de construction (make build)
 dist/
 build-verif/
+CLAUDE.md

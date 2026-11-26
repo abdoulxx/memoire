@@ -56,6 +56,13 @@ CONFIG: dict[str, Any] = {
     }
 }
 
+# `k_fenetres: 1` : un episode s'ouvre a la premiere alerte, comme avant le
+# correctif par episode. Utilise par les tests qui portent sur autre chose que
+# le regroupement lui-meme (robustesse, forme de l'URL, silence sonore).
+CONFIG_EPISODE_K1: dict[str, Any] = {
+    "telegram": {**CONFIG["telegram"], "episode": {"k_fenetres": 1}},
+}
+
 
 class Horloge:
     """Horloge pilotee par le test : aucun `sleep` reel n'a sa place ici."""
@@ -193,18 +200,22 @@ def test_un_evenement_sans_detail_exploitable_sort_quand_meme() -> None:
 
 
 def test_le_premier_evenement_d_un_type_part_immediatement() -> None:
-    """Une alerte retardee d'une minute n'est plus une alerte en temps reel."""
+    """Une alerte isolee retardee d'une minute n'est plus une alerte en temps reel.
+
+    `collect_gap` ici, et non `alert` : depuis le correctif par episode (D51),
+    `alert` suit une regle differente, testee plus bas dans sa propre section.
+    """
     notificateur, envoyes, _ = _notificateur()
-    notificateur.observer_evenement(_entree("alert", score=0.9, seuil=0.3))
+    notificateur.observer_evenement(_entree("collect_gap", points_manques=3))
     assert len(envoyes) == 1
-    assert "Anomalie detectee" in envoyes[0]["text"]
+    assert "Trou de collecte" in envoyes[0]["text"]
     assert envoyes[0]["chat_id"] == "-100123"
 
 
 def test_une_rafale_ne_produit_qu_un_message_par_fenetre_et_par_type() -> None:
     notificateur, envoyes, horloge = _notificateur()
     for i in range(40):
-        notificateur.observer_evenement(_entree("alert", score=0.5 + i / 100, seuil=0.3))
+        notificateur.observer_evenement(_entree("collect_gap", points_manques=i))
     assert len(envoyes) == 1  # seul le premier est parti
     assert notificateur.en_attente == 39
 
@@ -218,10 +229,10 @@ def test_une_rafale_ne_produit_qu_un_message_par_fenetre_et_par_type() -> None:
 
 
 def test_la_fenetre_de_regroupement_est_propre_a_chaque_type() -> None:
-    """Une rafale d'alertes ne doit pas retarder l'annonce d'une promotion."""
+    """Une rafale d'un type ne doit pas retarder l'annonce d'un autre."""
     notificateur, envoyes, _ = _notificateur()
-    notificateur.observer_evenement(_entree("alert", score=0.9, seuil=0.3))
-    notificateur.observer_evenement(_entree("alert", score=0.95, seuil=0.3))
+    notificateur.observer_evenement(_entree("collect_gap", points_manques=1))
+    notificateur.observer_evenement(_entree("collect_gap", points_manques=2))
     notificateur.observer_evenement(_entree("promoted", version=4, threshold=0.28))
     assert len(envoyes) == 2
     assert "Nouveau modele en service" in envoyes[-1]["text"]
@@ -230,8 +241,8 @@ def test_la_fenetre_de_regroupement_est_propre_a_chaque_type() -> None:
 
 def test_un_rincage_avant_la_fin_de_la_fenetre_n_envoie_rien() -> None:
     notificateur, envoyes, horloge = _notificateur()
-    notificateur.observer_evenement(_entree("alert", score=0.9, seuil=0.3))
-    notificateur.observer_evenement(_entree("alert", score=0.9, seuil=0.3))
+    notificateur.observer_evenement(_entree("collect_gap", points_manques=1))
+    notificateur.observer_evenement(_entree("collect_gap", points_manques=2))
     horloge.avancer(59.0)
     assert notificateur.rincer() == 0
     assert len(envoyes) == 1
@@ -242,8 +253,8 @@ def test_un_rincage_avant_la_fin_de_la_fenetre_n_envoie_rien() -> None:
 def test_le_rincage_force_ne_laisse_rien_en_attente() -> None:
     """Le resume de session ne doit pas rester bloque par le regroupement."""
     notificateur, envoyes, _ = _notificateur()
-    notificateur.observer_evenement(_entree("alert", score=0.9, seuil=0.3))
-    notificateur.observer_evenement(_entree("alert", score=0.8, seuil=0.3))
+    notificateur.observer_evenement(_entree("collect_gap", points_manques=1))
+    notificateur.observer_evenement(_entree("collect_gap", points_manques=2))
     notificateur.rincer(forcer=True)
     assert notificateur.en_attente == 0
     assert len(envoyes) == 2
@@ -257,14 +268,14 @@ def test_un_evenement_hors_liste_n_est_pas_notifie() -> None:
 
 
 def test_les_evenements_silencieux_partent_sans_notification_sonore() -> None:
-    notificateur, envoyes, _ = _notificateur()
+    notificateur, envoyes, _ = _notificateur(CONFIG_EPISODE_K1)
     notificateur.observer_evenement(_entree("service_stop", n_windows=120, n_alerts=3))
-    notificateur.observer_evenement(_entree("alert", score=0.9, seuil=0.3))
+    notificateur.observer_evenement(_entree("alert", score=0.9, threshold=0.3))
     silencieux = {
         message["text"].split(" —")[0]: message["disable_notification"] for message in envoyes
     }
     assert silencieux["Service de detection arrete"] is True
-    assert silencieux["Anomalie detectee"] is False
+    assert silencieux["Episode d'anomalie ouvert (1 fenetres consecutives)"] is False
 
 
 # --------------------------------------------------------------- robustesse
@@ -274,9 +285,9 @@ def test_un_echec_d_envoi_est_compte_et_n_interrompt_rien() -> None:
     def casse(_charge: dict[str, Any]) -> None:
         raise OSError("reseau indisponible")
 
-    reglages = ReglagesTelegram.depuis_config(CONFIG, env=ENV)
+    reglages = ReglagesTelegram.depuis_config(CONFIG_EPISODE_K1, env=ENV)
     notificateur = NotificateurTelegram(reglages, horloge=Horloge(), transport=casse)
-    notificateur.observer_evenement(_entree("alert", score=0.9, seuil=0.3))
+    notificateur.observer_evenement(_entree("alert", score=0.9, threshold=0.3))
     assert notificateur.echecs == 1
     assert notificateur.envois == 0
     # Et le service continue : l'evenement suivant est traite normalement.
@@ -298,6 +309,169 @@ def test_le_notificateur_satisfait_l_interface_attendue_par_la_boucle() -> None:
     assert isinstance(notificateur, Notificateur)
 
 
+# ----------------------------------------------------------- episodes d'alerte
+#
+# Correctif demande apres D51 : le champion en service alertait sur des dizaines
+# de fenetres consecutives (faute de reentrainement), une notification par
+# fenetre. Un episode regroupe une rafale d'alertes consecutives en un seul fil
+# de messages : ouverture, rappels espaces, cloture.
+#
+# La boucle appelle `rincer()` une fois par fenetre (tick), avant de savoir si
+# cette fenetre va alerter. C'est donc la encore `rincer()`, et seulement lui,
+# qui peut detecter qu'une fenetre n'a pas alerte — avec un tick de retard,
+# puisqu'il n'existe aucun evenement explicite de "non-alerte" dans le journal.
+
+
+def _fenetre(
+    notificateur: NotificateurTelegram, *, alerte: bool, fin_ts: int, score: float = 0.9
+) -> None:
+    """Simule un tick de la boucle : `rincer()` d'abord, puis l'alerte si elle a lieu."""
+    notificateur.rincer()
+    if alerte:
+        notificateur.observer_evenement(_entree("alert", fin_ts=fin_ts, score=score, threshold=0.3))
+
+
+def test_un_episode_ne_s_ouvre_qu_apres_k_fenetres_consecutives() -> None:
+    notificateur, envoyes, _ = _notificateur()  # k_fenetres par defaut = 3
+    _fenetre(notificateur, alerte=True, fin_ts=100)
+    _fenetre(notificateur, alerte=True, fin_ts=160)
+    assert envoyes == []  # 2 sur 3 : pas encore d'episode
+    _fenetre(notificateur, alerte=True, fin_ts=220)
+    assert len(envoyes) == 1
+    assert "Episode d'anomalie ouvert (3 fenetres consecutives)" in envoyes[0]["text"]
+
+
+def test_une_fenetre_sans_alerte_remet_le_compteur_a_zero_avant_l_ouverture() -> None:
+    """Une rupture avant le seuil d'ouverture oblige a recommencer la serie."""
+    notificateur, envoyes, _ = _notificateur()
+    _fenetre(notificateur, alerte=True, fin_ts=100)
+    _fenetre(notificateur, alerte=True, fin_ts=160)
+    _fenetre(notificateur, alerte=False, fin_ts=220)  # rupture (pas encore visible)
+    # La rupture du tick precedent n'est reconnue qu'au prochain `rincer()` :
+    # cette 4e fenetre remet le compteur a zero avant de s'ajouter elle-meme.
+    _fenetre(notificateur, alerte=True, fin_ts=280)
+    _fenetre(notificateur, alerte=True, fin_ts=340)
+    assert envoyes == []  # une seule fenetre consecutive depuis la rupture
+    _fenetre(notificateur, alerte=True, fin_ts=400)
+    assert len(envoyes) == 1  # 3 fenetres consecutives depuis la rupture
+
+
+def test_un_episode_ouvert_se_cloture_une_fenetre_apres_la_derniere_alerte() -> None:
+    notificateur, envoyes, _ = _notificateur()
+    for fin_ts, score in ((100, 0.6), (160, 0.9), (220, 0.7)):
+        _fenetre(notificateur, alerte=True, fin_ts=fin_ts, score=score)
+    assert len(envoyes) == 1  # ouverture
+
+    notificateur.rincer()  # tick sans alerte : la rupture n'est pas encore visible
+    assert len(envoyes) == 1
+    notificateur.rincer()  # tick suivant : la rupture du tick precedent est revelee
+    assert len(envoyes) == 2
+    texte = envoyes[1]["text"]
+    assert "Episode d'anomalie termine" in texte
+    assert "duree 2" in texte  # (220 - 100) s = 2 min
+    assert "score max 0.9" in texte
+
+
+def test_le_rincage_force_cloture_un_episode_ouvert() -> None:
+    """Arret du service : la cloture ne doit pas attendre un tick de plus."""
+    notificateur, envoyes, _ = _notificateur(CONFIG_EPISODE_K1)
+    notificateur.observer_evenement(_entree("alert", fin_ts=100, score=0.5, threshold=0.3))
+    assert len(envoyes) == 1
+    notificateur.rincer(forcer=True)
+    assert len(envoyes) == 2
+    assert "Episode d'anomalie termine" in envoyes[1]["text"]
+
+
+def test_les_rappels_sont_espaces_d_au_moins_le_delai_configure() -> None:
+    config = {
+        "telegram": {**CONFIG["telegram"], "episode": {"k_fenetres": 1, "rappel_s": 120}},
+    }
+    notificateur, envoyes, horloge = _notificateur(config)
+    notificateur.observer_evenement(_entree("alert", fin_ts=100, score=0.5, threshold=0.3))
+    assert len(envoyes) == 1  # ouverture
+
+    horloge.avancer(60)
+    notificateur.observer_evenement(_entree("alert", fin_ts=160, score=0.5, threshold=0.3))
+    assert len(envoyes) == 1  # 60 s < 120 s : pas de rappel
+
+    horloge.avancer(70)  # 130 s depuis l'ouverture
+    notificateur.observer_evenement(_entree("alert", fin_ts=220, score=0.5, threshold=0.3))
+    assert len(envoyes) == 2
+    assert "Episode d'anomalie en cours" in envoyes[1]["text"]
+
+    horloge.avancer(130)  # 130 s depuis le dernier rappel
+    notificateur.observer_evenement(_entree("alert", fin_ts=280, score=0.5, threshold=0.3))
+    assert len(envoyes) == 3
+
+
+def test_le_message_d_episode_contient_les_champs_attendus_sans_cle_imprevue() -> None:
+    """Seules les cles lues explicitement par `_rediger_episode` peuvent apparaitre."""
+    notificateur, envoyes, _ = _notificateur(CONFIG_EPISODE_K1)
+    notificateur.observer_evenement(_entree("service_start", version=7))
+    notificateur.observer_evenement(_entree("drift_confirmed", streak=40, share=0.3))
+    notificateur.observer_evenement(
+        _entree(
+            "alert",
+            fin_ts=0,
+            score=0.812345,
+            threshold=0.5,
+            top_features=[
+                {"feature": "latence_p95_mean", "z": 4.1},
+                {"feature": "requetes_par_s_max", "z": -3.2},
+                {"feature": "disque_libre_pct_mean", "z": 0.1},
+            ],
+            interpolee=False,
+            hote="serveur-de-sidy",  # cle non autorisee : ne doit jamais apparaitre
+        )
+    )
+    texte = envoyes[-1]["text"]
+    assert "1970-01-01T00:00:00+00:00" in texte
+    assert "score 0.8123 (seuil 0.5)" in texte
+    assert "latence_p95_mean 4.1" in texte
+    assert "requetes_par_s_max -3.2" in texte
+    assert "modele v7" in texte
+    assert "derive confirmee, reentrainement en attente" in texte
+    assert "serveur-de-sidy" not in texte
+    assert "http" not in texte  # pas de GRAFANA_BASE_URL : pas de lien
+
+
+def test_l_etat_de_derive_disparait_apres_une_promotion() -> None:
+    notificateur, envoyes, _ = _notificateur(CONFIG_EPISODE_K1)
+    notificateur.observer_evenement(_entree("drift_confirmed", streak=40, share=0.3))
+    notificateur.observer_evenement(_entree("promoted", version=9))
+    notificateur.observer_evenement(_entree("alert", fin_ts=0, score=0.6, threshold=0.3))
+    texte = envoyes[-1]["text"]
+    assert "modele v9" in texte
+    assert "derive confirmee" not in texte
+
+
+def test_le_lien_grafana_n_apparait_que_si_base_url_et_uid_sont_configures() -> None:
+    config = {
+        "telegram": {
+            **CONFIG["telegram"],
+            "episode": {"k_fenetres": 1},
+            "grafana_dashboard_uid": "memoire-pipeline",
+        },
+    }
+    # Sans GRAFANA_BASE_URL dans l'environnement : pas de lien, pas d'erreur.
+    sans_url, envoyes_sans, _ = _notificateur(config)
+    sans_url.observer_evenement(_entree("alert", fin_ts=3600, score=0.5, threshold=0.3))
+    assert "http" not in envoyes_sans[-1]["text"]
+
+    # L'hote utilise ici est une fausse adresse locale de test, jamais celle du
+    # serveur reel (§4.3) : elle ne vient que de l'environnement du test.
+    reglages = ReglagesTelegram.depuis_config(
+        config, env={**ENV, "GRAFANA_BASE_URL": "http://127.0.0.1:3000"}
+    )
+    envoyes_avec: list[dict[str, Any]] = []
+    avec_url = NotificateurTelegram(reglages, horloge=Horloge(), transport=envoyes_avec.append)
+    avec_url.observer_evenement(_entree("alert", fin_ts=3600, score=0.5, threshold=0.3))
+    assert (
+        "http://127.0.0.1:3000/d/memoire-pipeline?from=3600000&to=3600000"
+        in envoyes_avec[-1]["text"]
+    )
+
+
 # ------------------------------------------------------- abonnement au journal
 
 
@@ -311,13 +485,17 @@ def test_les_messages_viennent_du_journal_et_de_rien_d_autre(tmp_path: Path) -> 
     ).ouvrir()
     journal.abonnes.append(notificateur.observer_evenement)
 
-    journal.ecrire("alert", score=0.91, seuil=0.3)
+    # k_fenetres par defaut = 3 : il faut trois alertes consecutives pour que
+    # l'episode s'ouvre (voir la section « episodes d'alerte » plus bas).
+    for fin_ts in (100, 160, 220):
+        journal.ecrire("alert", fin_ts=fin_ts, score=0.91, threshold=0.3)
     journal.ecrire("drift_confirmed", streak=30, share=0.27)
     journal.ecrire("drift_signal", share=0.27)  # journalise, non notifie
 
     lignes = (tmp_path / "events.jsonl").read_text(encoding="utf-8").strip().splitlines()
-    assert len(lignes) == 3
-    assert len(envoyes) == 2
+    assert len(lignes) == 5
+    assert len(envoyes) == 2  # ouverture de l'episode + derive confirmee
+    assert "Episode d'anomalie ouvert" in envoyes[0]["text"]
     assert "Derive confirmee" in envoyes[1]["text"]
     assert "streak 30" in envoyes[1]["text"]
 
@@ -325,7 +503,7 @@ def test_les_messages_viennent_du_journal_et_de_rien_d_autre(tmp_path: Path) -> 
 def test_l_url_d_envoi_porte_le_jeton_et_la_methode_sendmessage() -> None:
     """Verifie la forme de l'appel sans l'emettre : le transport est remplace."""
     captures: list[str] = []
-    reglages = ReglagesTelegram.depuis_config(CONFIG, env=ENV)
+    reglages = ReglagesTelegram.depuis_config(CONFIG_EPISODE_K1, env=ENV)
     notificateur = NotificateurTelegram(reglages, horloge=Horloge())
 
     def faux_urlopen(requete: Any, timeout: float = 0.0) -> Any:  # noqa: ANN401
@@ -337,7 +515,7 @@ def test_l_url_d_envoi_porte_le_jeton_et_la_methode_sendmessage() -> None:
     original = urllib.request.urlopen
     urllib.request.urlopen = faux_urlopen  # type: ignore[assignment]
     try:
-        notificateur.observer_evenement(_entree("alert", score=0.9, seuil=0.3))
+        notificateur.observer_evenement(_entree("alert", score=0.9, threshold=0.3))
     finally:
         urllib.request.urlopen = original  # type: ignore[assignment]
 

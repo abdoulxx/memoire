@@ -6,7 +6,10 @@
 # code — il n'y a que des evenements journalises dont certains sont pousses.
 #
 # Aucun secret ici (§4.3). Le jeton du bot et l'identifiant de conversation
-# viennent de l'environnement : TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID.
+# viennent de l'environnement : TELEGRAM_BOT_TOKEN et TELEGRAM_CHAT_ID. La
+# base du lien Grafana (GRAFANA_BASE_URL, optionnelle) suit la meme regle :
+# un vrai lien revelerait l'hote du serveur, donc elle ne vient jamais d'un
+# fichier suivi par git. Sans elle, les messages d'episode omettent le lien.
 
 telegram:
   # false par defaut : un depot clone ne doit pas tenter d'appeler une API
@@ -61,3 +64,22 @@ telegram:
   # Base de l'API. Surchargeable par TELEGRAM_API_BASE, ce qui permet de viser
   # un serveur de test local sans toucher a un fichier suivi par git.
   api: https://api.telegram.org
+
+  # `alert` n'est pas regroupe par fenetre de temps comme les autres evenements
+  # (`regroupement_s`) : une rafale d'alertes consecutives est suivie comme un
+  # seul episode (ouverture, rappels, cloture), pour eviter un message par
+  # fenetre quand le champion en service n'est pas reentraine.
+  episode:
+    # Nombre de fenetres consecutives avant l'ouverture d'un episode. Une
+    # anomalie isolee (1-2 fenetres) ne declenche aucun message : seule une
+    # derive durable ou une saturation justifie de reveiller le telephone.
+    k_fenetres: 3
+    # Delai minimal entre deux rappels tant que l'episode dure (secondes).
+    rappel_s: 1800
+    # Nombre de features les plus en ecart affichees par message (0 pour les
+    # omettre).
+    features_affichees: 3
+
+  # Identifiant (non sensible) du tableau de bord Grafana cite dans le lien de
+  # l'episode ; voir infra/grafana/build_dashboard.py. Vide = pas de lien.
+  grafana_dashboard_uid: memoire-pipeline

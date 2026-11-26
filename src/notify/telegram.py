@@ -43,6 +43,7 @@ import os
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from src.serving.evenements import EVENEMENTS
@@ -52,7 +53,10 @@ API_PAR_DEFAUT = "https://api.telegram.org"
 # Ce que chaque evenement a le droit de publier. Volontairement restrictif :
 # ajouter une cle ici est un geste conscient, l'oublier ne fuite rien.
 CLES_PUBLIABLES: dict[str, tuple[str, ...]] = {
-    "alert": ("score", "seuil"),
+    # "threshold", pas "seuil" : c'est la cle que `src/serving/loop.py::_traiter`
+    # journalise reellement (`self.journal.ecrire("alert", ..., threshold=...)`).
+    # Avant ce correctif, `decrire()` ne publiait jamais le seuil d'une alerte.
+    "alert": ("score", "threshold"),
     "drift_signal": ("share", "streak"),
     "drift_confirmed": ("share", "streak", "n_features_drifting"),
     "retrain_start": ("n_windows",),
@@ -100,9 +104,17 @@ class ReglagesTelegram:
     regroupement_s: float
     timeout_s: float
     silencieux: tuple[str, ...]
+    episode_k_fenetres: int = 3
+    episode_rappel_s: float = 1800.0
+    episode_features_affichees: int = 3
+    grafana_dashboard_uid: str = ""
     api: str = field(default=API_PAR_DEFAUT, repr=False)
     jeton: str = field(default="", repr=False)
     conversation: str = field(default="", repr=False)
+    # Revele l'hote du serveur (§4.3), au meme titre que le jeton : vient
+    # uniquement de GRAFANA_BASE_URL dans l'environnement, jamais d'un fichier
+    # suivi par git. Vide par defaut : le lien est alors omis des messages.
+    grafana_base_url: str = field(default="", repr=False)
 
     @classmethod
     def depuis_config(
@@ -145,15 +157,39 @@ class ReglagesTelegram:
                 "l'environnement quand `telegram.actif` vaut true (§4.3 : aucun secret "
                 "dans le depot). Mettre `actif: false` pour s'en passer."
             )
+
+        bloc_episode = dict(bloc.get("episode", {}) or {})
+        episode_k_fenetres = int(bloc_episode.get("k_fenetres", 3))
+        if episode_k_fenetres < 1:
+            raise ErreurTelegram(
+                f"`telegram.episode.k_fenetres` doit etre >= 1 : {episode_k_fenetres}."
+            )
+        episode_rappel_s = float(bloc_episode.get("rappel_s", 1800.0))
+        if episode_rappel_s <= 0:
+            raise ErreurTelegram(
+                f"`telegram.episode.rappel_s` doit etre positif : {episode_rappel_s}."
+            )
+        episode_features_affichees = int(bloc_episode.get("features_affichees", 3))
+        if episode_features_affichees < 0:
+            raise ErreurTelegram(
+                "`telegram.episode.features_affichees` doit etre >= 0 : "
+                f"{episode_features_affichees}."
+            )
+
         return cls(
             actif=actif,
             evenements=evenements,
             regroupement_s=regroupement_s,
             timeout_s=timeout_s,
             silencieux=silencieux,
+            episode_k_fenetres=episode_k_fenetres,
+            episode_rappel_s=episode_rappel_s,
+            episode_features_affichees=episode_features_affichees,
+            grafana_dashboard_uid=str(bloc.get("grafana_dashboard_uid", "")),
             api=str(environnement.get("TELEGRAM_API_BASE") or bloc.get("api", API_PAR_DEFAUT)),
             jeton=jeton,
             conversation=conversation,
+            grafana_base_url=environnement.get("GRAFANA_BASE_URL", ""),
         )
 
 
@@ -193,6 +229,27 @@ class _Groupe:
     dernier_envoi: float | None = None
 
 
+def _epoch_vers_iso(ts: int) -> str:
+    return datetime.fromtimestamp(int(ts), UTC).isoformat(timespec="seconds")
+
+
+@dataclass
+class _Episode:
+    """Rafale d'alertes consecutives suivie comme un seul evenement notifiable.
+
+    Un episode, pas une fenetre : la correction demandee apres D51 (le champion
+    en service alerte sur des dizaines de fenetres consecutives faute de
+    reentrainement) est precisement d'eviter un message par fenetre.
+    """
+
+    debut_fin_ts: int
+    derniere_fin_ts: int
+    n_fenetres: int
+    score_max: float
+    derniere_entree: dict[str, Any]
+    dernier_envoi: float
+
+
 class NotificateurTelegram:
     """Abonne du journal qui pousse les evenements retenus vers Telegram.
 
@@ -216,6 +273,19 @@ class NotificateurTelegram:
         self.envois = 0
         self.echecs = 0
         self.ignores = 0
+        # Suivi par episode (correctif D51), uniquement pour `alert` : voir
+        # `_observer_alerte`. Le reste des evenements garde le regroupement
+        # par type ci-dessus.
+        self._streak_alerte: list[dict[str, Any]] = []
+        self._episode: _Episode | None = None
+        # "Tour" = un appel a `rincer()`, c'est-a-dire un tick de la boucle. Une
+        # fenetre qui n'alerte pas ne produit aucun evenement : c'est donc
+        # l'absence d'alerte **entre deux tours** qui rompt une sequence
+        # consecutive, pas un evenement explicite de fin.
+        self._tour = 0
+        self._dernier_tour_alerte = -1
+        self._version_connue: int | None = None
+        self._etat_derive: str = ""
 
     # ------------------------------------------------------------- abonnement
 
@@ -223,14 +293,86 @@ class NotificateurTelegram:
         """Appele par `JournalEvenements.ecrire`. Ne leve jamais."""
         try:
             event = str(entree.get("event", ""))
+            details = entree.get("details")
+            details = details if isinstance(details, dict) else {}
+
+            # Etat transverse, suivi independamment de la liste d'evenements
+            # pousses : un message d'episode doit rester correct meme si
+            # `promoted` ou `drift_confirmed` ne sont pas eux-memes notifies.
+            if event == "promoted":
+                self._version_connue = details.get("version")
+                self._etat_derive = ""
+            elif event == "service_start":
+                self._version_connue = details.get("version")
+            elif event == "drift_confirmed":
+                self._etat_derive = "derive confirmee, reentrainement en attente"
+
             groupe = self.groupes.get(event)
             if groupe is None:
                 self.ignores += 1
+                return
+            if event == "alert":
+                self._observer_alerte(entree, details)
                 return
             groupe.entrees.append(entree)
             self.rincer()
         except Exception:  # noqa: BLE001 - la notification ne casse pas le service
             return
+
+    def _observer_alerte(self, entree: dict[str, Any], details: dict[str, Any]) -> None:
+        """Ouvre, prolonge ou rappelle un episode d'alertes consecutives.
+
+        N'appelle **pas** `rincer()` : c'est le tick de la boucle (donc
+        `rincer()` lui-meme) qui fait avancer `_tour`, et le faire ici aussi
+        compterait deux tours pour une seule fenetre.
+        """
+        score = details.get("score")
+        fin_ts = details.get("fin_ts")
+        self._dernier_tour_alerte = self._tour
+
+        if self._episode is None:
+            self._streak_alerte.append(entree)
+            if len(self._streak_alerte) < self.reglages.episode_k_fenetres:
+                return
+            debut_details = self._streak_alerte[0].get("details")
+            debut_details = debut_details if isinstance(debut_details, dict) else {}
+            # Max sur toute la serie qui a ouvert l'episode, pas seulement sur
+            # la fenetre declenchante : les k-1 precedentes ont pu alerter plus fort.
+            scores_streak = [
+                float(e["details"]["score"])
+                for e in self._streak_alerte
+                if isinstance(e.get("details"), dict) and e["details"].get("score") is not None
+            ]
+            self._episode = _Episode(
+                debut_fin_ts=int(debut_details.get("fin_ts") or 0),
+                derniere_fin_ts=int(fin_ts) if fin_ts is not None else 0,
+                n_fenetres=len(self._streak_alerte),
+                score_max=max(scores_streak) if scores_streak else 0.0,
+                derniere_entree=entree,
+                dernier_envoi=self.horloge(),
+            )
+            self._streak_alerte = []
+            self._envoyer(self._rediger_episode("ouverture", self._episode), silencieux=False)
+            return
+
+        self._episode.n_fenetres += 1
+        self._episode.derniere_entree = entree
+        if fin_ts is not None:
+            self._episode.derniere_fin_ts = int(fin_ts)
+        if score is not None:
+            self._episode.score_max = max(self._episode.score_max, float(score))
+
+        maintenant = self.horloge()
+        if maintenant - self._episode.dernier_envoi >= self.reglages.episode_rappel_s:
+            self._episode.dernier_envoi = maintenant
+            self._envoyer(self._rediger_episode("rappel", self._episode), silencieux=False)
+
+    def _clore_episode(self) -> None:
+        episode = self._episode
+        self._episode = None
+        self._streak_alerte = []
+        if episode is not None:
+            self._envoyer(self._rediger_episode("cloture", episode), silencieux=False)
 
     def rincer(self, *, forcer: bool = False) -> int:
         """Envoie les groupes dont la fenetre de regroupement est ecoulee.
@@ -239,7 +381,19 @@ class NotificateurTelegram:
         evenement : sans cela, le dernier evenement d'une rafale resterait en
         attente jusqu'au prochain du meme type, c'est-a-dire peut-etre jamais.
         `forcer` sert a l'arret du service, qui ne doit rien laisser en attente.
+
+        C'est aussi ici, et nulle part ailleurs, que se detecte la fin d'un
+        episode d'alertes : une fenetre qui n'alerte pas ne journalise rien, son
+        seul effet observable est qu'aucun appel a `_observer_alerte` n'a eu
+        lieu entre deux tours.
         """
+        self._tour += 1
+        if forcer or self._tour - 1 > self._dernier_tour_alerte:
+            if self._episode is not None:
+                self._clore_episode()
+            else:
+                self._streak_alerte = []
+
         envoyes = 0
         maintenant = self.horloge()
         for event, groupe in self.groupes.items():
@@ -278,6 +432,75 @@ class NotificateurTelegram:
         return (
             f"{LIBELLES.get(event, event)} — {len(entrees)} en "
             f"{int(self.reglages.regroupement_s)} s. Derniere : {decrire(derniere)}"
+        )
+
+    def _rediger_episode(self, phase: str, episode: _Episode) -> str:
+        """Message d'episode : jamais un simple dump de `details`.
+
+        Seules les cles explicitement lues ici peuvent apparaitre dans un
+        message — contrairement a `decrire()` (pilote par `CLES_PUBLIABLES`),
+        cette redaction est ecrite a la main precisement pour qu'une cle
+        inattendue (ex. un nom d'hote glisse par erreur dans `details`) ne
+        puisse jamais se retrouver publiee.
+        """
+        details = episode.derniere_entree.get("details")
+        details = details if isinstance(details, dict) else {}
+        score = details.get("score")
+        seuil = details.get("threshold")
+        version = details.get("version", self._version_connue)
+
+        morceaux = [_epoch_vers_iso(episode.derniere_fin_ts)]
+        if score is not None and seuil is not None:
+            morceaux.append(f"score {_nombre(float(score))} (seuil {_nombre(float(seuil))})")
+
+        n = self.reglages.episode_features_affichees
+        top = details.get("top_features")
+        if n > 0 and isinstance(top, list) and top:
+            rendu = ", ".join(
+                f"{item.get('feature')} {_nombre(float(item.get('z')))}"
+                for item in top[:n]
+                if isinstance(item, dict) and item.get("feature") is not None
+            )
+            if rendu:
+                morceaux.append(rendu)
+
+        if version is not None:
+            morceaux.append(f"modele v{version}")
+        if self._etat_derive:
+            morceaux.append(self._etat_derive)
+
+        if phase == "ouverture":
+            entete = f"Episode d'anomalie ouvert ({episode.n_fenetres} fenetres consecutives)"
+        elif phase == "rappel":
+            entete = f"Episode d'anomalie en cours ({episode.n_fenetres} fenetres)"
+        else:
+            duree_min = max(0.0, (episode.derniere_fin_ts - episode.debut_fin_ts) / 60.0)
+            entete = (
+                f"Episode d'anomalie termine — duree {_nombre(duree_min)} min, "
+                f"score max {_nombre(episode.score_max)}"
+            )
+
+        lien = self._lien_grafana(episode)
+        if lien:
+            morceaux.append(lien)
+
+        return entete + " — " + ", ".join(morceaux)
+
+    def _lien_grafana(self, episode: _Episode) -> str:
+        """Lien Grafana sur la plage de l'episode, ou chaine vide.
+
+        Omis par defaut : `grafana_base_url` ne vient que de `GRAFANA_BASE_URL`
+        dans l'environnement (jamais d'un fichier suivi par git), au meme
+        titre que le jeton Telegram (§4.3 — un vrai host revelerait
+        l'infrastructure).
+        """
+        if not self.reglages.grafana_base_url or not self.reglages.grafana_dashboard_uid:
+            return ""
+        depart_ms = episode.debut_fin_ts * 1000
+        fin_ms = episode.derniere_fin_ts * 1000
+        return (
+            f"{self.reglages.grafana_base_url}/d/{self.reglages.grafana_dashboard_uid}"
+            f"?from={depart_ms}&to={fin_ms}"
         )
 
     # ------------------------------------------------------------------ envoi

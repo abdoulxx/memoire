@@ -76,6 +76,15 @@ class IsolationForestDetector:
     def _transform(self, X: np.ndarray) -> np.ndarray:
         return X if self._scaler is None else self._scaler.transform(X)
 
+    def z_scores(self, X: np.ndarray) -> np.ndarray:
+        """Ecarts standardises par rapport a l'entrainement, pour expliquer une alerte.
+
+        Alias public de `_transform` : sans standardisation (`scaling: none`),
+        une colonne nulle n'apporterait aucune information de deviation, donc
+        aucun appelant ne doit la confondre avec une vraie feature brute.
+        """
+        return self._transform(X)
+
     def score(self, X: np.ndarray) -> np.ndarray:
         """Score d'anomalie. Score eleve = plus anormal (oppose de scikit-learn)."""
         if self._forest is None:
