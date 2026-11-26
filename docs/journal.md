@@ -677,3 +677,34 @@ depuis le demarrage, avec les heures** :
 2026-11-22T21:15Z ; une capture doit couvrir une plage posterieure a cette heure, pas la derive du
 21/11 ni les deux premieres anomalies. Le tableau « infrastructure » (metriques brutes Prometheus)
 n'a pas cette limite et montre normalement toute la session depuis le 15/11.
+
+## 2026-11-26 — Premier rejeu reel de `m6_session_01`, et diagnostic du service en ligne (D50, D51)
+
+**Rejeu** : `mdrift session-replay m6_session_01` (B0/B1/P/A1), `session-report` et `session-figure`
+executes sur le serveur, deploiement prealable par `git pull --ff-only` (commit `7d9f891`, aucun
+conflit avec la modification locale non commitee `configs/notify.yaml:actif=true`). Resultats et
+figure dans `results/session_reports/m6_session_01/` et
+`docs/figures/scores_session_m6_session_01.png` — detail chiffre en D50.
+
+**Diagnostic demande par Sidy sur le service en ligne, a partir de l'archive de l'ancien run**
+`online_20261122T212005Z` (volume `memoire-detection-data`, extraite sans toucher au conteneur
+actif, archivee dans `data/archives/online/`) **et du run courant** `online_20261125T062356Z` :
+- **Alertes par heure, avant/apres la confirmation de derive du 23/11 21:38:20Z** : ~60/h des deux
+  cotes (1463 alertes sur 24,4 h avant, 1966 sur 32,75 h apres) — **aucune difference**, parce que
+  la confirmation n'a jamais declenche de reentrainement effectif (voir D51). Score constant entre
+  0,62 et 0,73 (mediane 0,674) contre un seuil fixe a 0,555387 du debut a la fin des deux runs :
+  essentiellement chaque fenetre alerte, confirmant l'hypothese de Sidy — le champion en service
+  (version 1) a ete entraine avant la derive reelle du 21/11 et n'a jamais ete reentraine depuis.
+- **Injections apres la fin de session (2026-11-25T02:14:32Z)** : aucune. La derniere anomalie
+  etiquetee (`data/labels/m6_session_01.csv`) se termine le 24/11 a 19:03:08Z ; `mdrift chaos-list`
+  et `docker ps` confirment zero conteneur d'injection residuel au 26/11.
+- **Le plancher de reentrainement a ete repousse par un redemarrage non programme** du conteneur
+  `memoire-detection`, survenu le 25/11 a 06:23:59Z (cause non identifiee depuis ce poste). Le
+  compteur `n_train_available` (jamais persiste) est reparti du prechargement habituel (~400
+  fenetres) au lieu de continuer depuis ou il en etait ; la derive a ete re-confirmee le 26/11 a
+  06:42:20Z, de nouveau refusee par le garde-fou (`n_train_available: 418` contre
+  `min_train_windows: 5450`). Plancher desormais attendu vers le **28/11 en fin d'apres-midi UTC**
+  si le service n'est plus redemarre d'ici la, et non le 27/11 09:30 initialement attendu par Sidy.
+  Decision : ne pas redemarrer `memoire-detection` avant cette echeance ; le correctif du
+  notificateur (notifications par episode plutot que par fenetre) est code et teste mais pas
+  deploye, pour la meme raison.
