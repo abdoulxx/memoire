@@ -1,0 +1,20 @@
+{
+  "run_id": "m6_session_01",
+  "windows": {
+    "n_windows_train": 5073,
+    "n_windows_eval": 7614,
+    "n_windows_total": 12687
+  },
+  "drift_real": {
+    "n_derives": 1,
+    "derives": [
+      {
+        "ts": "2026-11-21T12:11:56Z",
+        "type": "deploiement",
+        "description": "Nouvelle version 1.1.0 de l'appli de test : latence de base 25->45ms, dispersion 0.35->0.5"
+      }
+    ],
+    "scenario": "reel"
+  },
+  "doublon_pic_cpu": "doublon pic_cpu : 2026-11-23T14:00:02Z->2026-11-23T14:03:03Z et 2026-11-23T14:01:53Z->2026-11-23T14:04:54Z se chevauchent ; etiquetage fusionne en UN evenement (union des deux plages), pas compte deux fois dans le rappel par evenement."
+}

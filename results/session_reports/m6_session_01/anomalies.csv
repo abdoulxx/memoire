@@ -1,0 +1,12 @@
+event_index,type,n_etiquettes_brutes,start_at,end_at,length_points,detected_static,delay_static_minutes,detected_periodic,delay_periodic_minutes,detected_proposed,delay_proposed_minutes,detected_ablation,delay_ablation_minutes
+0,pic_cpu,1,2026-11-20T23:41:00Z,2026-11-20T23:43:00Z,3,True,0.0,True,0.0,True,0.0,True,0.0
+1,fuite_memoire,1,2026-11-21T06:27:00Z,2026-11-21T06:30:00Z,4,False,,False,,False,,False,
+2,latence,1,2026-11-22T19:58:00Z,2026-11-22T19:59:00Z,2,True,0.0,True,1.0,True,0.0,True,0.0
+3,erreurs,1,2026-11-22T21:58:00Z,2026-11-22T21:59:00Z,2,True,0.0,False,,True,0.0,True,0.0
+4,saturation,1,2026-11-23T08:01:00Z,2026-11-23T08:02:00Z,2,True,0.0,True,0.0,True,0.0,True,0.0
+5,pic_cpu,2,2026-11-23T14:01:00Z,2026-11-23T14:04:00Z,4,True,0.0,True,0.0,True,0.0,True,0.0
+6,fuite_memoire,1,2026-11-23T20:01:00Z,2026-11-23T20:04:00Z,4,True,0.0,False,,True,0.0,True,0.0
+7,latence,1,2026-11-24T02:01:00Z,2026-11-24T02:02:00Z,2,True,0.0,True,0.0,True,0.0,True,0.0
+8,erreurs,1,2026-11-24T08:01:00Z,2026-11-24T08:02:00Z,2,True,0.0,True,9.0,True,0.0,True,0.0
+9,saturation,1,2026-11-24T14:01:00Z,2026-11-24T14:02:00Z,2,True,0.0,True,0.0,True,0.0,True,0.0
+10,pic_cpu,1,2026-11-24T19:01:00Z,2026-11-24T19:03:00Z,3,True,0.0,True,0.0,True,0.0,True,0.0
